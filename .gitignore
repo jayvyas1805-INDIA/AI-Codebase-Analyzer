@@ -1,0 +1,174 @@
+# ============================================
+# AI Codebase Analyzer - Git Ignore
+# ============================================
+
+# -------------------------
+# Python / FastAPI Backend
+# -------------------------
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+backend/venv/
+backend/.venv/
+
+# Python packaging
+*.egg
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Type checking / linters
+.mypy_cache/
+.pyre/
+.ruff_cache/
+
+# -------------------------
+# Environment Variables
+# -------------------------
+
+.env
+.env.*
+!.env.example
+
+# -------------------------
+# FastAPI / Temporary Files
+# -------------------------
+
+*.log
+*.tmp
+*.temp
+
+# Uploaded files / extracted projects
+backend/uploads/
+backend/temp/
+backend/tmp/
+backend/extracted/
+backend/workspace/
+
+# Generated analysis data
+backend/data/
+backend/output/
+backend/reports/
+
+# -------------------------
+# AI / RAG
+# -------------------------
+
+# Local vector databases
+backend/chroma/
+backend/chroma_db/
+backend/vectorstore/
+backend/vector_db/
+
+# Embeddings / generated models
+backend/embeddings/
+backend/models/
+
+# -------------------------
+# Node / React / Vite
+# -------------------------
+
+node_modules/
+frontend/node_modules/
+
+# Vite build output
+frontend/dist/
+frontend/build/
+
+# Vite cache
+frontend/.vite/
+
+# React temporary files
+frontend/.cache/
+
+# -------------------------
+# Frontend Environment
+# -------------------------
+
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# -------------------------
+# Logs
+# -------------------------
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+*.log
+
+# -------------------------
+# IDE / Editors
+# -------------------------
+
+.vscode/
+.idea/
+*.iml
+
+# VS Code local history
+.history/
+
+# -------------------------
+# OS Files
+# -------------------------
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+# -------------------------
+# Temporary Files
+# -------------------------
+
+*.swp
+*.swo
+*.swn
+
+# -------------------------
+# Project-specific
+# -------------------------
+
+# Uploaded test ZIP files
+*.zip
+
+# Extracted sample projects
+sample_projects/*/node_modules/
+sample_projects/*/dist/
+sample_projects/*/build/
+
+# Generated reports
+reports/
+output/
+tmp/
+temp/

@@ -1,0 +1,13 @@
+.container {
+  background: blue;
+  padding: 20px;
+}
+
+.navbar {
+  display: flex;
+  justify-content: space-between;
+}
+
+.title {
+  font-size: 24px;
+}

@@ -1,0 +1,22 @@
+.container {
+  background: red;
+  padding: 50px;
+}
+
+.hero {
+  text-align: center;
+}
+
+.dead-class {
+  color: green;
+}
+
+.hero .subtitle {
+  font-weight: 300;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 10px;
+  }
+}
