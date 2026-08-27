@@ -304,25 +304,28 @@ code, pre {
 
 .dashboard-body {
   display: grid;
-  grid-template-columns: 340px 1fr;
+  grid-template-columns: 300px 1fr 300px;
   gap: 16px;
   align-items: start;
 }
 
-@media (min-width: 1180px) {
-  .dashboard-body {
-    grid-template-columns: 340px 1fr 340px;
-  }
+.dashboard-body > * {
+  position: sticky;
+  top: 20px;
+}
 
-  .detail-column {
-    display: contents;
+@media (max-width: 1200px) {
+  .dashboard-body {
+    grid-template-columns: 260px 1fr 260px;
   }
 }
 
-@media (max-width: 860px) {
-  .dashboard-body {
-    grid-template-columns: 1fr;
-  }
+.dashboard-body--mobile {
+  display: block;
+}
+
+.dashboard-body--mobile > * {
+  position: static;
 }
 
 /* ---- Issue list (left pane) ---- */

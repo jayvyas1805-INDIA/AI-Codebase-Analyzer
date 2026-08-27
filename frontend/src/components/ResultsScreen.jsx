@@ -5,7 +5,7 @@ import ChatPanel from "./ChatPanel.jsx";
 import SummaryBar from "./SummaryBar.jsx";
 import { explainIssue, sendChatMessage } from "../api/analysisApi.js";
 
-function useIsMobile(breakpoint = 860) {
+function useIsMobile(breakpoint = 900) {
   const [isMobile, setIsMobile] = useState(
     typeof window !== "undefined" ? window.innerWidth < breakpoint : false
   );
@@ -29,10 +29,6 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
   const [explainingId, setExplainingId] = useState(null);
   const [explainError, setExplainError] = useState(null);
 
-  // Chat: one message history per issue, kept client-side in sync with
-  // whatever the backend returns after each send (backend is the source
-  // of truth, this is just a local mirror so switching issues and back
-  // doesn't lose what's already been asked).
   const [chatHistories, setChatHistories] = useState({});
   const [chatSendingId, setChatSendingId] = useState(null);
   const [chatError, setChatError] = useState(null);
@@ -91,6 +87,26 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
   const showListOnMobile = isMobile && !selectedId;
   const showDetailOnMobile = isMobile && !!selectedId;
 
+  const detailPanel = (
+    <IssueDetail
+      issue={selectedIssue}
+      onBack={() => setSelectedId(null)}
+      isMobile={isMobile}
+      isExplaining={explainingId === selectedIssue?.id}
+      explainError={explainError}
+    />
+  );
+
+  const chatPanel = (
+    <ChatPanel
+      issue={selectedIssue}
+      messages={chatHistories[selectedIssue?.id] ?? []}
+      onSendMessage={handleSendChatMessage}
+      isSending={chatSendingId === selectedIssue?.id}
+      sendError={chatError}
+    />
+  );
+
   return (
     <div className="results-screen">
       <header className="dashboard-header">
@@ -124,9 +140,10 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
         <div className="empty-project-state">
           <p>No issues found. This project's CSS class usage looks clean.</p>
         </div>
-      ) : (
-        <div className="dashboard-body">
-          {(!isMobile || showListOnMobile) && (
+      ) : isMobile ? (
+        // Mobile: only room for one "slot" at a time — list, or detail+chat stacked.
+        <div className="dashboard-body dashboard-body--mobile">
+          {showListOnMobile && (
             <IssueList
               issues={issues}
               selectedId={selectedId}
@@ -137,25 +154,28 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
               onTypeFilterChange={setTypeFilter}
             />
           )}
-
-          {(!isMobile || showDetailOnMobile) && (
+          {showDetailOnMobile && (
             <div className="detail-column">
-              <IssueDetail
-                issue={selectedIssue}
-                onBack={() => setSelectedId(null)}
-                isMobile={isMobile}
-                isExplaining={explainingId === selectedIssue?.id}
-                explainError={explainError}
-              />
-              <ChatPanel
-                issue={selectedIssue}
-                messages={chatHistories[selectedIssue?.id] ?? []}
-                onSendMessage={handleSendChatMessage}
-                isSending={chatSendingId === selectedIssue?.id}
-                sendError={chatError}
-              />
+              {detailPanel}
+              {chatPanel}
             </div>
           )}
+        </div>
+      ) : (
+        // Desktop/tablet: list, detail, and chat as three independent sticky
+        // columns, always visible together — chat never ends up "below the fold".
+        <div className="dashboard-body">
+          <IssueList
+            issues={issues}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            severityFilter={severityFilter}
+            onSeverityFilterChange={setSeverityFilter}
+            typeFilter={typeFilter}
+            onTypeFilterChange={setTypeFilter}
+          />
+          {detailPanel}
+          {chatPanel}
         </div>
       )}
     </div>
