@@ -1,10 +1,12 @@
 import { SEVERITY_META, ISSUE_TYPE_META } from "../utils/issueMeta.js";
 import DiffTable from "./DiffTable.jsx";
+import SkeletonLines from "./SkeletonLines.jsx";
 
 export default function IssueDetail({ issue, onBack, isMobile, isExplaining, explainError }) {
   if (!issue) {
     return (
       <div className="issue-detail issue-detail--empty">
+        <EmptyIcon />
         <p>Select an issue from the list to see its details.</p>
       </div>
     );
@@ -72,9 +74,11 @@ export default function IssueDetail({ issue, onBack, isMobile, isExplaining, exp
       <section className="ai-section">
         <h3>AI explanation</h3>
         {isExplaining ? (
-          <p className="ai-loading">Generating explanation with the local LLM&hellip;</p>
+          <SkeletonLines lines={3} />
         ) : explainError ? (
-          <p className="ai-error">{explainError}</p>
+          <p className="ai-error">
+            <ErrorIcon /> {explainError}
+          </p>
         ) : (
           <p>{issue.ai_explanation || "Not available."}</p>
         )}
@@ -87,5 +91,24 @@ export default function IssueDetail({ issue, onBack, isMobile, isExplaining, exp
         </section>
       )}
     </div>
+  );
+}
+
+function EmptyIcon() {
+  return (
+    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" className="empty-icon">
+      <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M20 20L16.5 16.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ErrorIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ verticalAlign: "-2px", marginRight: "4px" }}>
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M12 8v5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx="12" cy="16" r="0.8" fill="currentColor" />
+    </svg>
   );
 }

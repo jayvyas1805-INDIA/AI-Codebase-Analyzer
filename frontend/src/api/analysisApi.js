@@ -65,3 +65,35 @@ export async function explainIssue(jobId, issueId) {
 
   return response.json();
 }
+
+/**
+ * Sends one chat message scoped to a specific issue. The backend maintains
+ * conversation history server-side (keyed by job_id + issue_id) — we only
+ * send the new message, not prior history. Returns the full updated
+ * history so the UI can stay in sync.
+ */
+export async function sendChatMessage(jobId, issueId, message) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/chat/${jobId}/${issueId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+    });
+  } catch (networkError) {
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
+  }
+
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail || detail;
+    } catch {
+      // response wasn't JSON — keep statusText
+    }
+    throw new Error(`Chat failed: ${detail}`);
+  }
+
+  return response.json();
+}

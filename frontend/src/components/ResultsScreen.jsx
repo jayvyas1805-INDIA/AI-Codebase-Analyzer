@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import IssueList from "./IssueList.jsx";
 import IssueDetail from "./IssueDetail.jsx";
+import ChatPanel from "./ChatPanel.jsx";
 import SummaryBar from "./SummaryBar.jsx";
-import { explainIssue } from "../api/analysisApi.js";
+import { explainIssue, sendChatMessage } from "../api/analysisApi.js";
 
 function useIsMobile(breakpoint = 860) {
   const [isMobile, setIsMobile] = useState(
@@ -21,14 +22,21 @@ function useIsMobile(breakpoint = 860) {
 }
 
 export default function ResultsScreen({ result, onAnalyzeAnother }) {
-  // Issues live in local state (not just `result.issues`) because we mutate
-  // individual issues in place as their AI explanation arrives.
   const [issues, setIssues] = useState(result.issues);
   const [selectedId, setSelectedId] = useState(result.issues[0]?.id ?? null);
   const [severityFilter, setSeverityFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [explainingId, setExplainingId] = useState(null);
   const [explainError, setExplainError] = useState(null);
+
+  // Chat: one message history per issue, kept client-side in sync with
+  // whatever the backend returns after each send (backend is the source
+  // of truth, this is just a local mirror so switching issues and back
+  // doesn't lose what's already been asked).
+  const [chatHistories, setChatHistories] = useState({});
+  const [chatSendingId, setChatSendingId] = useState(null);
+  const [chatError, setChatError] = useState(null);
+
   const isMobile = useIsMobile();
 
   const selectedIssue = useMemo(
@@ -36,12 +44,9 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
     [issues, selectedId]
   );
 
-  // Fetches the AI explanation for one issue, on demand. Skips the call
-  // entirely if it's already been fetched (or is currently in flight).
   const requestExplanation = useCallback(
     async (issue) => {
       if (!issue || issue.ai_explanation !== null) return;
-
       setExplainError(null);
       setExplainingId(issue.id);
       try {
@@ -56,14 +61,29 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
     [result.job_id]
   );
 
-  // Auto-request an explanation whenever the selected issue changes
-  // (covers both clicking a new issue AND the initial default selection).
   useEffect(() => {
     if (selectedIssue) {
       requestExplanation(selectedIssue);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedIssue?.id]);
+
+  const handleSendChatMessage = useCallback(
+    async (text) => {
+      if (!selectedIssue) return;
+      setChatError(null);
+      setChatSendingId(selectedIssue.id);
+      try {
+        const res = await sendChatMessage(result.job_id, selectedIssue.id, text);
+        setChatHistories((prev) => ({ ...prev, [selectedIssue.id]: res.history }));
+      } catch (err) {
+        setChatError(err.message);
+      } finally {
+        setChatSendingId(null);
+      }
+    },
+    [result.job_id, selectedIssue]
+  );
 
   const hasParseWarnings =
     result.css_parse_errors.length > 0 || result.jsx_parse_errors.length > 0;
@@ -117,14 +137,24 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
               onTypeFilterChange={setTypeFilter}
             />
           )}
+
           {(!isMobile || showDetailOnMobile) && (
-            <IssueDetail
-              issue={selectedIssue}
-              onBack={() => setSelectedId(null)}
-              isMobile={isMobile}
-              isExplaining={explainingId === selectedIssue?.id}
-              explainError={explainError}
-            />
+            <div className="detail-column">
+              <IssueDetail
+                issue={selectedIssue}
+                onBack={() => setSelectedId(null)}
+                isMobile={isMobile}
+                isExplaining={explainingId === selectedIssue?.id}
+                explainError={explainError}
+              />
+              <ChatPanel
+                issue={selectedIssue}
+                messages={chatHistories[selectedIssue?.id] ?? []}
+                onSendMessage={handleSendChatMessage}
+                isSending={chatSendingId === selectedIssue?.id}
+                sendError={chatError}
+              />
+            </div>
           )}
         </div>
       )}

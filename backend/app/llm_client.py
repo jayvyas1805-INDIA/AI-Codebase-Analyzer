@@ -48,3 +48,26 @@ def call_ollama_embedding(text: str) -> List[float]:
     resp = requests.post(f"{OLLAMA_BASE_URL}/api/embeddings", json=payload, timeout=60)
     resp.raise_for_status()
     return resp.json()["embedding"]
+
+
+def call_ollama_chat_conversation(messages: List[dict]) -> str:
+    """
+    Multi-turn version, used by Phase 7 (chat). Uses Ollama's /api/chat
+    endpoint (not /api/generate) since it natively supports a running
+    messages list — the model sees the whole conversation, not just the
+    latest message.
+    messages: [{"role": "system"|"user"|"assistant", "content": "..."}]
+    """
+    payload = {"model": OLLAMA_CHAT_MODEL, "messages": messages, "stream": False}
+    try:
+        resp = requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, timeout=120)
+        resp.raise_for_status()
+        return resp.json().get("message", {}).get("content", "").strip()
+    except requests.exceptions.ConnectionError:
+        return (
+            f"[Chat unavailable — could not connect to Ollama at {OLLAMA_BASE_URL}. "
+            f"Make sure Ollama is running and the model has been pulled: "
+            f"`ollama pull {OLLAMA_CHAT_MODEL}`]"
+        )
+    except requests.exceptions.RequestException as e:
+        return f"[Chat failed: {e}]"

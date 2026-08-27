@@ -16,9 +16,17 @@ export default function DiffTable({ definitions }) {
         <thead>
           <tr>
             <th className="diff-table__prop-header">property</th>
-            {definitions.map((d) => (
-              <th key={d.file_path}>{d.file_path.split(/[/\\]/).pop()}</th>
-            ))}
+            {definitions.map((d) => {
+              const parts = d.file_path.split(/[/\\]/);
+              const filename = parts.pop();
+              const dir = parts.join("/");
+              return (
+                <th key={d.file_path} title={d.file_path}>
+                  <span className="diff-table__filename">{filename}</span>
+                  {dir && <span className="diff-table__dir">{dir}/</span>}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>

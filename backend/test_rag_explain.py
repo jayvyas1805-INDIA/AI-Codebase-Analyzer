@@ -40,6 +40,7 @@ if __name__ == "__main__":
 
     for issue in issues:
         print(f"=== {issue.issue_type}: {issue.class_name} ===")
-        explanation = explain_issue(issue, collection)
-        print(explanation)
+        result = explain_issue(issue, collection)
+        print("EXPLANATION:", result["explanation"])
+        print("RECOMMENDATION:", result["recommendation"])
         print()

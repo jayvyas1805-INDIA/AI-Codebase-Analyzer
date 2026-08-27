@@ -109,7 +109,24 @@ class Issue(BaseModel):
     confidence: str = "high"   # "high" | "low"
     css_definitions: List[CSSClassDefinitionRef] = []
     jsx_usages: List[JSXClassUsageRef] = []
-    ai_explanation: Optional[str] = None   # filled in Phase 5
+    ai_explanation: Optional[str] = None    # filled in Phase 5 — what/why + affected components
+    ai_recommendation: Optional[str] = None  # filled in Phase 5 — concrete fix suggestion
+
+
+# ---- Phase 7: Chat models ----
+
+class ChatMessage(BaseModel):
+    role: str      # "user" | "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    history: List[ChatMessage]
 
 
 class FullAnalysisResult(BaseModel):

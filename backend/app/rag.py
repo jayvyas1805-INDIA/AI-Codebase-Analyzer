@@ -14,27 +14,12 @@ from .models import Issue
 from .llm_client import call_ollama_chat
 from .vector_store import retrieve_context
 
-SYSTEM_PROMPT = """
-You are a senior frontend engineer analyzing a React codebase.
-
-Your job is to explain static-analysis findings using ONLY the provided context.
-
-Rules:
-1. Never invent files, components, selectors, CSS properties, or relationships.
-2. Do not claim that a duplicate selector is definitely a conflict unless the
-   provided evidence supports that conclusion.
-3. Clearly distinguish between:
-   - duplicate selector
-   - potential conflict
-   - likely conflict
-   - unused CSS
-   - missing CSS definition
-4. Explain the evidence behind the issue.
-5. Mention the affected files/components when available.
-6. Give practical recommendations.
-7. If the available context is insufficient, explicitly say so.
-8. Keep the explanation under 150 words.
-"""
+SYSTEM_PROMPT = (
+    "You are a senior frontend engineer explaining static analysis findings "
+    "about CSS class usage in a React codebase. Only use the CONTEXT provided "
+    "below — never invent file names, class names, or details that aren't in "
+    "it. Be concise and practical."
+)
 
 
 def _build_query(issue: Issue) -> str:
@@ -69,18 +54,45 @@ def _format_context(issue: Issue, retrieved_chunks) -> str:
     return "\n".join(lines)
 
 
-def explain_issue(issue: Issue, collection) -> str:
+def explain_issue(issue: Issue, collection) -> dict:
+    """
+    Returns {"explanation": str, "recommendation": str}.
+    Asks the LLM for two clearly delimited sections and splits them apart.
+    If the model doesn't follow the format (small local models sometimes
+    don't), the whole response is used as the explanation and the
+    recommendation is left empty rather than guessing.
+    """
     query = _build_query(issue)
     retrieved = retrieve_context(collection, query, top_k=5)
     context = _format_context(issue, retrieved)
 
     prompt = (
         f"{context}\n\n"
-        "Using ONLY the information above, write a short explanation covering:\n"
-        "1. What the issue is and why it happens\n"
-        "2. Which component(s)/file(s) are affected\n"
-        "3. A concrete recommendation to fix it\n"
-        "Keep it under 150 words."
+        "Using ONLY the information above, respond in EXACTLY this format "
+        "(keep each section under 100 words):\n\n"
+        "EXPLANATION:\n"
+        "<what the issue is, why it happens, and which component(s)/file(s) are affected>\n\n"
+        "RECOMMENDATION:\n"
+        "<a concrete, actionable fix>"
     )
 
-    return call_ollama_chat(prompt, system=SYSTEM_PROMPT)
+    raw = call_ollama_chat(prompt, system=SYSTEM_PROMPT)
+    return _split_explanation_and_recommendation(raw)
+
+
+def _split_explanation_and_recommendation(raw: str) -> dict:
+    explanation, recommendation = raw, ""
+
+    exp_marker = "EXPLANATION:"
+    rec_marker = "RECOMMENDATION:"
+    exp_idx = raw.upper().find(exp_marker)
+    rec_idx = raw.upper().find(rec_marker)
+
+    if exp_idx != -1 and rec_idx != -1 and rec_idx > exp_idx:
+        explanation = raw[exp_idx + len(exp_marker): rec_idx].strip()
+        recommendation = raw[rec_idx + len(rec_marker):].strip()
+    elif rec_idx != -1:
+        explanation = raw[:rec_idx].strip()
+        recommendation = raw[rec_idx + len(rec_marker):].strip()
+
+    return {"explanation": explanation, "recommendation": recommendation}
