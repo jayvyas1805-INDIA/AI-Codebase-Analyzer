@@ -32,5 +32,5 @@ os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
 # ---- Phase 5: Ollama (local open-source LLM) settings ----
 OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_CHAT_MODEL = "llama3.2"        # run: ollama pull llama3.2
-OLLAMA_EMBED_MODEL = "nomic-embed-text"  # run: ollama pull nomic-embed-text
+OLLAMA_CHAT_MODEL = "llama3.2:1b"     # run: ollama pull llama3.2:1b  (~1.3GB — smallest usable, low disk footprint)
+OLLAMA_EMBED_MODEL = "nomic-embed-text"  # run: ollama pull nomic-embed-text  (~274MB)

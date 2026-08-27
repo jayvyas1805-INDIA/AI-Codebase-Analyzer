@@ -1,4 +1,4 @@
-import { SEVERITY_META, ISSUE_TYPE_META } from "../utils/issueMeta.js";
+import { SEVERITY_META, ISSUE_TYPE_META, FILE_LEVEL_ISSUE_TYPES } from "../utils/issueMeta.js";
 
 const SEVERITY_FILTERS = ["all", "high", "medium", "low"];
 const TYPE_FILTERS = [
@@ -8,6 +8,7 @@ const TYPE_FILTERS = [
   "duplicate_class",
   "unused_css_class",
   "undefined_css_class",
+  "unimported_css_file",
 ];
 
 export default function IssueList({
@@ -58,25 +59,30 @@ export default function IssueList({
       {filtered.length === 0 && <p className="empty-state">No issues match these filters.</p>}
 
       <ul className="issue-rows">
-        {filtered.map((issue) => (
-          <li key={issue.id}>
-            <button
-              className={`issue-row ${selectedId === issue.id ? "issue-row--selected" : ""}`}
-              onClick={() => onSelect(issue.id)}
-            >
-              <span className={`dot dot--${issue.severity}`} aria-hidden="true" />
-              <span className="issue-row__main">
-                <span className="issue-row__class">.{issue.class_name}</span>
-                <span className="issue-row__type">
-                  {ISSUE_TYPE_META[issue.issue_type]?.short ?? issue.issue_type}
+        {filtered.map((issue) => {
+          const isFileLevel = FILE_LEVEL_ISSUE_TYPES.has(issue.issue_type);
+          return (
+            <li key={issue.id}>
+              <button
+                className={`issue-row ${selectedId === issue.id ? "issue-row--selected" : ""}`}
+                onClick={() => onSelect(issue.id)}
+              >
+                <span className={`dot dot--${issue.severity}`} aria-hidden="true" />
+                <span className="issue-row__main">
+                  <span className="issue-row__class">
+                    {isFileLevel ? issue.class_name : `.${issue.class_name}`}
+                  </span>
+                  <span className="issue-row__type">
+                    {ISSUE_TYPE_META[issue.issue_type]?.short ?? issue.issue_type}
+                  </span>
                 </span>
-              </span>
-              <span className={`badge badge--${issue.severity} badge--small`}>
-                {SEVERITY_META[issue.severity]?.label ?? issue.severity}
-              </span>
-            </button>
-          </li>
-        ))}
+                <span className={`badge badge--${issue.severity} badge--small`}>
+                  {SEVERITY_META[issue.severity]?.label ?? issue.severity}
+                </span>
+              </button>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

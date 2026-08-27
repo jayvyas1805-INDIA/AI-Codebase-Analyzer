@@ -1,4 +1,4 @@
-import { SEVERITY_META, ISSUE_TYPE_META } from "../utils/issueMeta.js";
+import { SEVERITY_META, ISSUE_TYPE_META, FILE_LEVEL_ISSUE_TYPES } from "../utils/issueMeta.js";
 import DiffTable from "./DiffTable.jsx";
 import SkeletonLines from "./SkeletonLines.jsx";
 
@@ -14,6 +14,7 @@ export default function IssueDetail({ issue, onBack, isMobile, isExplaining, exp
 
   const sevMeta = SEVERITY_META[issue.severity] ?? { label: issue.severity };
   const typeMeta = ISSUE_TYPE_META[issue.issue_type] ?? { label: issue.issue_type };
+  const isFileLevel = FILE_LEVEL_ISSUE_TYPES.has(issue.issue_type);
   const hasMultipleDefs = issue.css_definitions.length >= 2;
   const hasSingleDef = issue.css_definitions.length === 1;
 
@@ -31,7 +32,9 @@ export default function IssueDetail({ issue, onBack, isMobile, isExplaining, exp
         <span className="badge badge--confidence">{issue.confidence} confidence</span>
       </div>
 
-      <h2 className="issue-detail__class">.{issue.class_name}</h2>
+      <h2 className={`issue-detail__class ${isFileLevel ? "issue-detail__class--file" : ""}`}>
+        {isFileLevel ? issue.class_name : `.${issue.class_name}`}
+      </h2>
       <p className="issue-detail__message">{issue.message}</p>
 
       {hasMultipleDefs && (

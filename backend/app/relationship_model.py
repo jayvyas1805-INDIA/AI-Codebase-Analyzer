@@ -10,7 +10,7 @@ This is intentionally NOT a general graph library — just two dicts. That's
 enough for every rule issue_detector.py needs, and it's easy to reason about.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Set
 
 from .models import (
     CSSFileParseResult,
@@ -25,6 +25,8 @@ class RelationshipModel:
     css_classes: Dict[str, List[CSSClassDefinitionRef]] = field(default_factory=dict)
     jsx_usages: Dict[str, List[JSXClassUsageRef]] = field(default_factory=dict)
     project_has_dynamic_classnames: bool = False
+    css_file_paths: List[str] = field(default_factory=list)     # every CSS file that was parsed
+    imported_css_paths: Set[str] = field(default_factory=set)   # CSS files actually imported somewhere
 
 
 def build_relationship_model(
@@ -33,6 +35,7 @@ def build_relationship_model(
     model = RelationshipModel()
 
     for css_result in css_results:
+        model.css_file_paths.append(css_result.file_path)
         for rule in css_result.rules:
             if not rule.is_supported_selector:
                 continue  # MVP scope: only simple class selectors (Phase 2 decision)
@@ -48,6 +51,10 @@ def build_relationship_model(
                 )
 
     for jsx_result in jsx_results:
+        for imp in jsx_result.imports:
+            if imp.is_css_import and imp.resolved_path is not None:
+                model.imported_css_paths.add(imp.resolved_path)
+
         for usage in jsx_result.class_name_usages:
             if usage.dynamic_expression is not None:
                 model.project_has_dynamic_classnames = True

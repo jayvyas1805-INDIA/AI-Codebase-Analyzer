@@ -14,6 +14,8 @@ Detects:
   2. Unused CSS classes (defined, never used as a static className in JSX)
   3. Undefined CSS classes (used as a static className in JSX, no matching
      CSS rule anywhere in the project)
+  4. Unimported CSS files (a CSS file was parsed but no JSX/JS file imports
+     it — low severity/confidence since it could still be loaded another way)
 """
 from typing import List, Optional, Tuple
 
@@ -159,6 +161,31 @@ def detect_issues(model: RelationshipModel) -> List[Issue]:
                 confidence="high",
                 css_definitions=[],
                 jsx_usages=usages,
+            )
+        )
+
+    # --- 4. CSS files that are never imported anywhere (orphaned files) ---
+    # Low severity/confidence on purpose: we can only see JS/JSX imports.
+    # A file could still be pulled in some other way this tool doesn't scan
+    # (a <link> tag in index.html, a global import in a build config, etc.),
+    # so this is a heads-up to check, not a confident "this is dead code."
+    for css_path in model.css_file_paths:
+        if css_path in model.imported_css_paths:
+            continue
+        issues.append(
+            Issue(
+                id=next_id(),
+                issue_type="unimported_css_file",
+                severity="low",
+                class_name=css_path,
+                message=(
+                    f"'{css_path}' is never imported by any JSX/JS file in this project. "
+                    f"Its styles may be unused, or it could be included some other way this "
+                    f"tool doesn't check (e.g. a <link> tag in index.html)."
+                ),
+                confidence="low",
+                css_definitions=[],
+                jsx_usages=[],
             )
         )
 
