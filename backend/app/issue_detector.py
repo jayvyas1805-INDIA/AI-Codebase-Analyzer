@@ -21,6 +21,8 @@ from typing import List, Optional, Tuple
 
 from .models import Issue
 from .relationship_model import RelationshipModel
+from .reachability_lookup import ReachabilityLookup
+from .scope_aware_conflicts import detect_scope_aware_conflicts
 
 
 def _classify_definitions(definitions) -> Optional[Tuple[str, str]]:
@@ -62,7 +64,95 @@ def _classify_definitions(definitions) -> Optional[Tuple[str, str]]:
     return ("partial_overlap_class", "medium")        # some agree, some disagree
 
 
+def _detect_unused_classes(model: RelationshipModel, id_gen) -> List[Issue]:
+    issues: List[Issue] = []
+    unused_confidence = "low" if model.project_has_dynamic_classnames else "high"
+    unused_severity = "low" if model.project_has_dynamic_classnames else "medium"
+
+    for class_name, definitions in model.css_classes.items():
+        if class_name in model.jsx_usages:
+            continue
+        note = (
+            " Note: this project uses dynamic classNames elsewhere, so this "
+            "could still be applied conditionally at runtime."
+            if model.project_has_dynamic_classnames
+            else ""
+        )
+        issues.append(
+            Issue(
+                id=id_gen(),
+                issue_type="unused_css_class",
+                severity=unused_severity,
+                class_name=class_name,
+                message=(
+                    f"'.{class_name}' is defined in "
+                    f"{', '.join(sorted({d.file_path for d in definitions}))} but never appears "
+                    f"as a static className anywhere in the scanned JSX/JS files.{note}"
+                ),
+                confidence=unused_confidence,
+                css_definitions=definitions,
+                jsx_usages=[],
+                conflict_category="unused_css",
+            )
+        )
+    return issues
+
+
+def _detect_undefined_classes(model: RelationshipModel, id_gen) -> List[Issue]:
+    issues: List[Issue] = []
+    for class_name, usages in model.jsx_usages.items():
+        if class_name in model.css_classes:
+            continue
+        issues.append(
+            Issue(
+                id=id_gen(),
+                issue_type="undefined_css_class",
+                severity="medium",
+                class_name=class_name,
+                message=(
+                    f"'{class_name}' is used as a className in "
+                    f"{', '.join(sorted({u.file_path for u in usages}))} but no matching CSS "
+                    f"rule was found anywhere in the project. Possible typo or missing style."
+                ),
+                confidence="high",
+                css_definitions=[],
+                jsx_usages=usages,
+            )
+        )
+    return issues
+
+
+def _detect_unimported_css(model: RelationshipModel, id_gen) -> List[Issue]:
+    issues: List[Issue] = []
+    for css_path in model.css_file_paths:
+        if css_path in model.imported_css_paths:
+            continue
+        issues.append(
+            Issue(
+                id=id_gen(),
+                issue_type="unimported_css_file",
+                severity="low",
+                class_name=css_path,
+                message=(
+                    f"'{css_path}' is never imported by any JSX/JS file in this project. "
+                    f"Its styles may be unused, or it could be included some other way this "
+                    f"tool doesn't check (e.g. a <link> tag in index.html)."
+                ),
+                confidence="low",
+                css_definitions=[],
+                jsx_usages=[],
+            )
+        )
+    return issues
+
+
 def detect_issues(model: RelationshipModel) -> List[Issue]:
+    """
+    ORIGINAL name-only conflict detection. Kept exactly as it was — this
+    is what runs if no reachability graph is available for some reason
+    (e.g. a project with zero detected JSX imports). Prefer
+    detect_issues_scope_aware() whenever a ReachabilityGraph exists.
+    """
     issues: List[Issue] = []
     counter = 0
 
@@ -71,7 +161,7 @@ def detect_issues(model: RelationshipModel) -> List[Issue]:
         counter += 1
         return f"issue-{counter:04d}"
 
-    # --- 1. Duplicate / partial overlap / conflict ---
+    # --- 1. Duplicate / partial overlap / conflict (name-only, no scope awareness) ---
     for class_name, definitions in model.css_classes.items():
         result = _classify_definitions(definitions)
         if result is None:
@@ -110,83 +200,37 @@ def detect_issues(model: RelationshipModel) -> List[Issue]:
             )
         )
 
-    # --- 2. Unused CSS classes ---
-    # MVP simplification: if the project uses dynamic classNames ANYWHERE,
-    # we can't be fully sure a class isn't applied conditionally at runtime,
-    # so ALL unused-class findings for that project get lower confidence.
-    unused_confidence = "low" if model.project_has_dynamic_classnames else "high"
-    unused_severity = "low" if model.project_has_dynamic_classnames else "medium"
+    issues.extend(_detect_unused_classes(model, next_id))
+    issues.extend(_detect_undefined_classes(model, next_id))
+    issues.extend(_detect_unimported_css(model, next_id))
+    return issues
 
-    for class_name, definitions in model.css_classes.items():
-        if class_name in model.jsx_usages:
-            continue
-        note = (
-            " Note: this project uses dynamic classNames elsewhere, so this "
-            "could still be applied conditionally at runtime."
-            if model.project_has_dynamic_classnames
-            else ""
-        )
-        issues.append(
-            Issue(
-                id=next_id(),
-                issue_type="unused_css_class",
-                severity=unused_severity,
-                class_name=class_name,
-                message=(
-                    f"'.{class_name}' is defined in "
-                    f"{', '.join(sorted({d.file_path for d in definitions}))} but never appears "
-                    f"as a static className anywhere in the scanned JSX/JS files.{note}"
-                ),
-                confidence=unused_confidence,
-                css_definitions=definitions,
-                jsx_usages=[],
-            )
-        )
 
-    # --- 3. JSX classNames with no matching CSS definition ---
-    for class_name, usages in model.jsx_usages.items():
-        if class_name in model.css_classes:
-            continue
-        issues.append(
-            Issue(
-                id=next_id(),
-                issue_type="undefined_css_class",
-                severity="medium",
-                class_name=class_name,
-                message=(
-                    f"'{class_name}' is used as a className in "
-                    f"{', '.join(sorted({u.file_path for u in usages}))} but no matching CSS "
-                    f"rule was found anywhere in the project. Possible typo or missing style."
-                ),
-                confidence="high",
-                css_definitions=[],
-                jsx_usages=usages,
-            )
-        )
+def detect_issues_scope_aware(model: RelationshipModel, reachability_graph, codebase_map=None) -> List[Issue]:
+    """
+    Phase 3 entry point. Same unused/undefined/unimported detection as
+    before (those don't need cross-file scope awareness), but conflict/
+    duplicate detection is replaced with scope_aware_conflicts.py's
+    reachability-based classification — see that module's docstring for
+    the full Confirmed/Potential/Isolated/Duplicate logic.
 
-    # --- 4. CSS files that are never imported anywhere (orphaned files) ---
-    # Low severity/confidence on purpose: we can only see JS/JSX imports.
-    # A file could still be pulled in some other way this tool doesn't scan
-    # (a <link> tag in index.html, a global import in a build config, etc.),
-    # so this is a heads-up to check, not a confident "this is dead code."
-    for css_path in model.css_file_paths:
-        if css_path in model.imported_css_paths:
-            continue
-        issues.append(
-            Issue(
-                id=next_id(),
-                issue_type="unimported_css_file",
-                severity="low",
-                class_name=css_path,
-                message=(
-                    f"'{css_path}' is never imported by any JSX/JS file in this project. "
-                    f"Its styles may be unused, or it could be included some other way this "
-                    f"tool doesn't check (e.g. a <link> tag in index.html)."
-                ),
-                confidence="low",
-                css_definitions=[],
-                jsx_usages=[],
-            )
-        )
+    codebase_map is passed through so ReachabilityLookup can fall back to
+    folder-based application assignment when the import graph couldn't
+    trace a file — see reachability_lookup.py's docstring for why that
+    fallback matters (without it, real-world import patterns the graph
+    can't trace get silently misreported as isolated).
+    """
+    issues: List[Issue] = []
+    counter = 0
 
+    def next_id() -> str:
+        nonlocal counter
+        counter += 1
+        return f"issue-{counter:04d}"
+
+    reach = ReachabilityLookup(reachability_graph, codebase_map)
+    issues.extend(detect_scope_aware_conflicts(model, reach, next_id))
+    issues.extend(_detect_unused_classes(model, next_id))
+    issues.extend(_detect_undefined_classes(model, next_id))
+    issues.extend(_detect_unimported_css(model, next_id))
     return issues

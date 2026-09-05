@@ -13,12 +13,13 @@ LLM), this module:
 from .models import Issue
 from .llm_client import call_ollama_chat
 from .vector_store import retrieve_context
+from .ai_context_builder import build_issue_context, CONTEXT_GUARDRAIL
 
 SYSTEM_PROMPT = (
     "You are a senior frontend engineer explaining static analysis findings "
-    "about CSS class usage in a React codebase. Only use the CONTEXT provided "
-    "below — never invent file names, class names, or details that aren't in "
-    "it. Be concise and practical."
+    "about CSS class usage in a React codebase, including cross-application "
+    "scope and reachability analysis. Be concise and practical.\n\n"
+    f"{CONTEXT_GUARDRAIL}"
 )
 
 
@@ -26,54 +27,37 @@ def _build_query(issue: Issue) -> str:
     return f"{issue.issue_type} involving CSS class '{issue.class_name}': {issue.message}"
 
 
-def _format_context(issue: Issue, retrieved_chunks) -> str:
-    lines = [
-        "ISSUE DETECTED BY STATIC ANALYSIS:",
-        f"- Type: {issue.issue_type}",
-        f"- Severity: {issue.severity}",
-        f"- Class: {issue.class_name}",
-        f"- Details: {issue.message}",
-    ]
-
-    if issue.css_definitions:
-        lines.append("\nCSS DEFINITIONS INVOLVED:")
-        for d in issue.css_definitions:
-            decl_text = "; ".join(f"{x.property}: {x.value}" for x in d.declarations)
-            lines.append(f"- {d.file_path}:{d.line_number}  .{issue.class_name} {{ {decl_text} }}")
-
-    if issue.jsx_usages:
-        lines.append("\nJSX USAGES INVOLVED:")
-        for u in issue.jsx_usages:
-            lines.append(f"- {u.file_path}:{u.line_number}  <{u.element}>")
-
-    if retrieved_chunks:
-        lines.append("\nADDITIONAL RELATED CONTEXT FROM THE CODEBASE:")
-        for chunk in retrieved_chunks:
-            lines.append(f"- {chunk}")
-
-    return "\n".join(lines)
-
-
-def explain_issue(issue: Issue, collection) -> dict:
+def explain_issue(issue: Issue, job, collection) -> dict:
     """
     Returns {"explanation": str, "recommendation": str}.
     Asks the LLM for two clearly delimited sections and splits them apart.
     If the model doesn't follow the format (small local models sometimes
     don't), the whole response is used as the explanation and the
     recommendation is left empty rather than guessing.
+
+    `job` is job_cache.JobData — carries the codebase map / reachability
+    graph the Phase 4 context builder needs. `collection` (the RAG vector
+    store) is still consulted for extra loosely-related chunks, but the
+    issue's own structured context always comes first and is never
+    dropped, per spec section 12.
     """
     query = _build_query(issue)
     retrieved = retrieve_context(collection, query, top_k=5)
-    context = _format_context(issue, retrieved)
+    context = build_issue_context(issue, job)
+    if retrieved:
+        context += "\n\n=== ADDITIONAL RETRIEVED CONTEXT (loosely related, lower priority) ===\n"
+        context += "\n".join(f"- {chunk}" for chunk in retrieved)
 
     prompt = (
         f"{context}\n\n"
         "Using ONLY the information above, respond in EXACTLY this format "
-        "(keep each section under 100 words):\n\n"
+        "(keep each section under 120 words):\n\n"
         "EXPLANATION:\n"
-        "<what the issue is, why it happens, and which component(s)/file(s) are affected>\n\n"
+        "<what the issue is, why it happens, which component(s)/application(s) "
+        "are affected, and — if another definition of this class exists "
+        "elsewhere in the project — why it either is or isn't part of this finding>\n\n"
         "RECOMMENDATION:\n"
-        "<a concrete, actionable fix>"
+        "<a concrete, actionable fix, or \"No action needed\" if this is an isolated duplicate>"
     )
 
     raw = call_ollama_chat(prompt, system=SYSTEM_PROMPT)

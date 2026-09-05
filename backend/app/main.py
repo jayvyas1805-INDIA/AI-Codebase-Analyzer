@@ -23,15 +23,22 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .zip_handler import create_job_workspace, safe_extract_zip
 from .scanner import scan_project
+from .codebase_mapper import build_codebase_map
+from .import_graph import build_reachability_graph
 from .css_parser import parse_css_file
-from .jsx_parser import parse_jsx_file
+from .jsx_parser import parse_jsx_files
 from .relationship_model import build_relationship_model
-from .issue_detector import detect_issues
+from .issue_detector import detect_issues_scope_aware
 from .vector_store import build_context_collection
 from .rag import explain_issue
 from .chat import continue_chat
+from .chat_commands import handle_chat_message
+from .fix_planner import plan_fix
+from .patch_generator import generate_patch
+from .sandbox_validator import validate_patch_in_sandbox
+from .fix_loop import attempt_validated_fix
 from .job_cache import save_job, get_job
-from .models import FullAnalysisResult, Issue, ChatRequest, ChatResponse, ChatMessage
+from .models import FullAnalysisResult, Issue, ChatRequest, ChatResponse, ChatMessage, FixPlan, Patch, ValidationResult, FixResult
 
 app = FastAPI(title="React Codebase Analyzer")
 
@@ -74,18 +81,31 @@ async def scan_upload(file: UploadFile = File(...)):
         css_results.append(result)
         css_parse_errors.extend(f"{result.file_path}: {e}" for e in result.parse_errors)
 
+    # Batched into a single Node process call for the whole project — see
+    # jsx_parser.py's docstring for why per-file subprocess calls used to
+    # dominate scan time on large projects.
+    jsx_files_to_parse = [(f.absolute_path, f.relative_path) for f in scan_result.jsx_files + scan_result.js_files]
+    jsx_results = parse_jsx_files(jsx_files_to_parse, source_root)
     jsx_parse_errors = []
-    jsx_results = []
-    for f in scan_result.jsx_files + scan_result.js_files:
-        result = parse_jsx_file(f.absolute_path, f.relative_path, source_root)
-        jsx_results.append(result)
+    for result in jsx_results:
         jsx_parse_errors.extend(f"{result.file_path}: {e}" for e in result.parse_errors)
 
     model = build_relationship_model(css_results, jsx_results)
-    issues = detect_issues(model)
+
+    # Phase 1: figure out which application each file belongs to.
+    codebase_map = build_codebase_map(scan_result)
+
+    # Phase 2: given that map, walk the actual import graph from each
+    # application's entry point to see which CSS files it can really reach.
+    reachability_graph = build_reachability_graph(codebase_map, jsx_results)
+
+    # Phase 3: classify conflicts using that reachability evidence instead
+    # of name-only matching — same class name in 2+ files is now only a
+    # candidate, not proof, per the spec's core design principle.
+    issues = detect_issues_scope_aware(model, reachability_graph, codebase_map)
 
     # Cache everything this job needs for on-demand explanation later.
-    save_job(job_id, issues, css_results, jsx_results)
+    save_job(job_id, issues, css_results, jsx_results, codebase_map, reachability_graph, scan_result.root_path)
 
     return FullAnalysisResult(
         job_id=job_id,
@@ -96,6 +116,8 @@ async def scan_upload(file: UploadFile = File(...)):
         jsx_parse_errors=jsx_parse_errors,
         issues=issues,
         total_issues=len(issues),
+        codebase_map=codebase_map,
+        reachability_graph=reachability_graph,
     )
 
 
@@ -121,7 +143,7 @@ def explain_issue_endpoint(job_id: str, issue_id: str):
         except Exception:
             job.collection = None  # explain_issue() handles collection=None gracefully
 
-    result = explain_issue(issue, job.collection)
+    result = explain_issue(issue, job, job.collection)
     issue.ai_explanation = result["explanation"]
     issue.ai_recommendation = result["recommendation"]
     return issue
@@ -140,16 +162,114 @@ def chat_endpoint(job_id: str, issue_id: str, body: ChatRequest):
     if issue is None:
         raise HTTPException(status_code=404, detail="Issue not found for this job.")
 
-    if job.collection is None:
-        try:
-            job.collection = build_context_collection(job.css_results, job.jsx_results)
-        except Exception:
-            job.collection = None
-
     history = job.chat_history.setdefault(issue_id, [])
-    reply = continue_chat(issue, job.collection, history, body.message)
+
+    # Phase 7: try the deterministic command router first (spec section 21
+    # — "Generate a fix.", "Validate the fix.", "Fix it.", etc. must run
+    # REAL backend logic, never an LLM's guess at what a patch contains).
+    # Only genuinely open-ended questions fall through to continue_chat().
+    command_reply = handle_chat_message(issue, job, body.message)
+    if command_reply is not None:
+        reply = command_reply
+    else:
+        if job.collection is None:
+            try:
+                job.collection = build_context_collection(job.css_results, job.jsx_results)
+            except Exception:
+                job.collection = None
+        reply = continue_chat(issue, job, job.collection, history, body.message)
 
     history.append({"role": "user", "content": body.message})
     history.append({"role": "assistant", "content": reply})
 
     return ChatResponse(reply=reply, history=[ChatMessage(**m) for m in history])
+
+
+@app.post("/api/plan-fix/{job_id}/{issue_id}", response_model=FixPlan)
+def plan_fix_endpoint(job_id: str, issue_id: str):
+    """
+    Phase 5 (spec section 14): deterministic fix plan for one issue —
+    which strategy, which file gets changed, and why (blast radius).
+    Never touches isolated_duplicate findings; see fix_planner.py.
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found. Jobs only live in memory — re-upload and re-scan if the server restarted.",
+        )
+
+    issue = next((i for i in job.issues if i.id == issue_id), None)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="Issue not found for this job.")
+
+    return plan_fix(issue, job)
+
+
+@app.post("/api/generate-patch/{job_id}/{issue_id}", response_model=Patch)
+def generate_patch_endpoint(job_id: str, issue_id: str):
+    """
+    Phase 5 (spec section 16): line-level patch for one issue, computed
+    from the fix plan above. Never applied automatically — the frontend
+    shows the diff and the user must explicitly approve it (spec section
+    24: "require explicit user approval before applying a validated patch").
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found. Jobs only live in memory — re-upload and re-scan if the server restarted.",
+        )
+
+    issue = next((i for i in job.issues if i.id == issue_id), None)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="Issue not found for this job.")
+
+    plan = plan_fix(issue, job)
+    return generate_patch(issue, plan, job)
+
+
+@app.post("/api/validate-patch/{job_id}/{issue_id}", response_model=ValidationResult)
+def validate_patch_endpoint(job_id: str, issue_id: str):
+    """
+    Phase 6 (spec section 17): apply the current plan's patch to a
+    throwaway sandbox copy, re-run the full analyzer, and report whether
+    the original issue actually resolved with no new conflicts elsewhere.
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found. Jobs only live in memory — re-upload and re-scan if the server restarted.",
+        )
+
+    issue = next((i for i in job.issues if i.id == issue_id), None)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="Issue not found for this job.")
+
+    plan = plan_fix(issue, job)
+    patch = generate_patch(issue, plan, job)
+    return validate_patch_in_sandbox(issue, patch, job)
+
+
+@app.post("/api/fix/{job_id}/{issue_id}", response_model=FixResult)
+def fix_endpoint(job_id: str, issue_id: str):
+    """
+    Phase 6 (spec section 19): the full iterative loop — plan, patch,
+    validate; on failure, retry with the next-cheapest candidate, up to 3
+    attempts total. Never applies anything to the real project; the
+    frontend must still get explicit user approval before doing that
+    (spec section 24).
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found. Jobs only live in memory — re-upload and re-scan if the server restarted.",
+        )
+
+    issue = next((i for i in job.issues if i.id == issue_id), None)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="Issue not found for this job.")
+
+    return attempt_validated_fix(issue, job)

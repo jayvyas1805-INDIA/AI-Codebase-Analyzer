@@ -1,0 +1,13 @@
+.btn-primary {
+  color: white;
+  background: red;
+}
+
+.panel {
+  padding: 20px;
+  color: white;
+}
+
+.card {
+  border-radius: 4px;
+}

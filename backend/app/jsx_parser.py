@@ -61,32 +61,26 @@ def _resolve_import_source(
 def parse_jsx_file(
     absolute_path: str, relative_path: str, project_root_abs: str
 ) -> JSXFileParseResult:
-    empty = lambda errors: JSXFileParseResult(
-        file_path=relative_path, imports=[], class_name_usages=[], parse_errors=errors
-    )
+    """
+    Single-file entry point — spawns one Node process for this one file.
+    Kept for backward compatibility (tests, single-file callers), but for
+    scanning a whole project use parse_jsx_files() below instead: spawning
+    a fresh Node process per file costs ~100-150ms of pure startup
+    overhead each time, which dominates total scan time on any project
+    with more than a couple dozen files.
+    """
+    results = parse_jsx_files([(absolute_path, relative_path)], project_root_abs)
+    return results[0]
 
-    try:
-        proc = subprocess.run(
-            ["node", JS_HELPER_SCRIPT, absolute_path],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except FileNotFoundError:
-        return empty(["Node.js not found. Make sure Node is installed and on your PATH."])
-    except subprocess.TimeoutExpired:
-        return empty(["Parsing timed out (file may be unusually large or malformed)."])
 
-    if proc.returncode != 0:
-        return empty([f"Node process failed: {proc.stderr.strip()[:500]}"])
-
-    try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        return empty([f"Could not parse Node output: {proc.stdout[:300]}"])
-
+def _raw_result_to_model(
+    relative_path: str, project_root_abs: str, data: dict
+) -> JSXFileParseResult:
     if "error" in data:
-        return empty([f"Babel parse error: {data['error']}"])
+        return JSXFileParseResult(
+            file_path=relative_path, imports=[], class_name_usages=[],
+            parse_errors=[f"Babel parse error: {data['error']}"],
+        )
 
     imports: List[ImportStatement] = []
     for imp in data.get("imports", []):
@@ -119,3 +113,74 @@ def parse_jsx_file(
     return JSXFileParseResult(
         file_path=relative_path, imports=imports, class_name_usages=usages, parse_errors=[]
     )
+
+
+def parse_jsx_files(
+    files: List[Tuple[str, str]], project_root_abs: str
+) -> List[JSXFileParseResult]:
+    """
+    Batch entry point — spawns Node ONCE for the whole project instead of
+    once per file. `files` is a list of (absolute_path, relative_path)
+    pairs, in the order results should come back in.
+
+    This is the fix for the scan-speed regression on large projects: a
+    300-file project used to take ~50s here alone (almost entirely Node
+    process-startup overhead, ~150ms x 300), because parse_jsx_file() was
+    called once per file. Batching brings that down to roughly the cost of
+    ONE Node startup plus actual parse time for all files combined.
+    """
+    if not files:
+        return []
+
+    absolute_paths = [abs_path for abs_path, _ in files]
+
+    try:
+        proc = subprocess.run(
+            ["node", JS_HELPER_SCRIPT, "--batch"],
+            input=json.dumps(absolute_paths),
+            capture_output=True,
+            text=True,
+            timeout=max(30, len(files) * 2),  # scale timeout with batch size
+        )
+    except FileNotFoundError:
+        error = "Node.js not found. Make sure Node is installed and on your PATH."
+        return [
+            JSXFileParseResult(file_path=rel, imports=[], class_name_usages=[], parse_errors=[error])
+            for _, rel in files
+        ]
+    except subprocess.TimeoutExpired:
+        error = "Batch parsing timed out (project may be unusually large)."
+        return [
+            JSXFileParseResult(file_path=rel, imports=[], class_name_usages=[], parse_errors=[error])
+            for _, rel in files
+        ]
+
+    if proc.returncode != 0:
+        error = f"Node process failed: {proc.stderr.strip()[:500]}"
+        return [
+            JSXFileParseResult(file_path=rel, imports=[], class_name_usages=[], parse_errors=[error])
+            for _, rel in files
+        ]
+
+    try:
+        batch_data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        error = f"Could not parse Node batch output: {proc.stdout[:300]}"
+        return [
+            JSXFileParseResult(file_path=rel, imports=[], class_name_usages=[], parse_errors=[error])
+            for _, rel in files
+        ]
+
+    results = []
+    for abs_path, rel_path in files:
+        data = batch_data.get(abs_path)
+        if data is None:
+            results.append(
+                JSXFileParseResult(
+                    file_path=rel_path, imports=[], class_name_usages=[],
+                    parse_errors=["No result returned for this file in the batch output."],
+                )
+            )
+        else:
+            results.append(_raw_result_to_model(rel_path, project_root_abs, data))
+    return results

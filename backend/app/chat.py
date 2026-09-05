@@ -10,25 +10,29 @@ from typing import Dict, List
 
 from .models import Issue
 from .llm_client import call_ollama_chat_conversation
-from .rag import _build_query, _format_context
+from .rag import _build_query
 from .vector_store import retrieve_context
+from .ai_context_builder import build_issue_context, CONTEXT_GUARDRAIL
 
 CHAT_SYSTEM_PROMPT = (
     "You are a senior frontend engineer helping a developer understand ONE "
     "specific static-analysis finding about CSS class usage in their React "
-    "codebase. Only use the ISSUE CONTEXT below — never invent file names, "
-    "class names, or details not present in it. If asked about something "
-    "unrelated to this issue, say you can only discuss this specific issue. "
-    "Be concise."
+    "codebase, including cross-application scope and reachability analysis. "
+    "If asked about something unrelated to this issue, say you can only "
+    "discuss this specific issue. Be concise.\n\n"
+    f"{CONTEXT_GUARDRAIL}"
 )
 
 
 def continue_chat(
-    issue: Issue, collection, history: List[Dict[str, str]], user_message: str
+    issue: Issue, job, collection, history: List[Dict[str, str]], user_message: str
 ) -> str:
     query = _build_query(issue)
     retrieved = retrieve_context(collection, query, top_k=5)
-    context = _format_context(issue, retrieved)
+    context = build_issue_context(issue, job)
+    if retrieved:
+        context += "\n\n=== ADDITIONAL RETRIEVED CONTEXT (loosely related, lower priority) ===\n"
+        context += "\n".join(f"- {chunk}" for chunk in retrieved)
 
     messages = [
         {"role": "system", "content": f"{CHAT_SYSTEM_PROMPT}\n\nISSUE CONTEXT:\n{context}"}
