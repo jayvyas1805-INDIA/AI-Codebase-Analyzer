@@ -105,7 +105,19 @@ async def scan_upload(file: UploadFile = File(...)):
     issues = detect_issues_scope_aware(model, reachability_graph, codebase_map)
 
     # Cache everything this job needs for on-demand explanation later.
+    # NOTE: job.issues keeps the FULL combined list (including isolated
+    # duplicates) — chat/explain/fix all look issues up by id, and the
+    # "why isn't this other class a conflict?" chat flow specifically
+    # needs isolated_duplicate issues to still be findable internally,
+    # even though they're excluded from the main response below.
     save_job(job_id, issues, css_results, jsx_results, codebase_map, reachability_graph, scan_result.root_path)
+
+    # Split isolated_duplicate out of the main issues list/count — it's
+    # not a problem, it's the analyzer's proof that a same-named class
+    # ISN'T one. Keeping it mixed into "issues"/"total_issues" made real
+    # findings harder to see and made severity counts misleading.
+    real_issues = [i for i in issues if i.conflict_category != "isolated_duplicate"]
+    isolated = [i for i in issues if i.conflict_category == "isolated_duplicate"]
 
     return FullAnalysisResult(
         job_id=job_id,
@@ -114,8 +126,9 @@ async def scan_upload(file: UploadFile = File(...)):
         project_has_dynamic_classnames=model.project_has_dynamic_classnames,
         css_parse_errors=css_parse_errors,
         jsx_parse_errors=jsx_parse_errors,
-        issues=issues,
-        total_issues=len(issues),
+        issues=real_issues,
+        total_issues=len(real_issues),
+        isolated_duplicates=isolated,
         codebase_map=codebase_map,
         reachability_graph=reachability_graph,
     )

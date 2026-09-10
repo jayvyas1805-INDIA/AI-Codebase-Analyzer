@@ -9,7 +9,7 @@ into inventing facts about files or classes it was never shown.
 from typing import Dict, List
 
 from .models import Issue
-from .llm_client import call_ollama_chat_conversation
+from .llm_client import call_llm_chat_conversation
 from .rag import _build_query
 from .vector_store import retrieve_context
 from .ai_context_builder import build_issue_context, CONTEXT_GUARDRAIL
@@ -40,4 +40,4 @@ def continue_chat(
     messages.extend(history)
     messages.append({"role": "user", "content": user_message})
 
-    return call_ollama_chat_conversation(messages)
+    return call_llm_chat_conversation(messages)

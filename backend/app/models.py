@@ -273,7 +273,8 @@ class FullAnalysisResult(BaseModel):
     project_has_dynamic_classnames: bool
     css_parse_errors: List[str]
     jsx_parse_errors: List[str]
-    issues: List[Issue]
-    total_issues: int
+    issues: List[Issue]           # real, actionable findings only (isolated_duplicate excluded)
+    total_issues: int             # count of the above — stays "clean" per user request
+    isolated_duplicates: List[Issue] = []   # same-name classes proven NOT to interact — informational only, not a problem
     codebase_map: Optional[CodebaseMap] = None
     reachability_graph: Optional[ReachabilityGraph] = None

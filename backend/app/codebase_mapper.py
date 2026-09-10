@@ -180,6 +180,65 @@ def build_codebase_map(scan_result: ScanResult) -> CodebaseMap:
     assign(scan_result.js_files, "js_files", shared_js)
     assign(scan_result.css_files, "css_files", shared_css)
 
+    # FIX (real-world regression found via user testing): a package.json
+    # sitting in a tooling-only subfolder (scripts/, functions/, cypress/,
+    # storybook/ — all common in real repos) with ZERO css/jsx/js files
+    # under it was becoming the ONLY "application" the mapper detected,
+    # while the actual app's real source files had no boundary root that
+    # matched them and fell into shared_*— where the reachability fallback
+    # can't help them (it only indexes files that belong to a real
+    # Application), silently resurrecting the "everything looks isolated"
+    # bug via a different path. Two-part fix:
+    #   1. Drop boundaries that matched zero files — they aren't real
+    #      applications, just incidental tooling config.
+    #   2. If real project files are STILL left unassigned after that
+    #      (because no surviving boundary covers them), give them a
+    #      catch-all root-level application instead of leaving them
+    #      unassigned — every relevant file should belong to SOME
+    #      application whenever boundaries were detected at all.
+    non_empty_roots = {
+        root for root, app in apps_by_root.items()
+        if app.jsx_files or app.js_files or app.css_files
+    }
+    dropped_empty = [r for r in apps_by_root if r not in non_empty_roots]
+    if dropped_empty and method != "single_app_fallback":
+        for r in dropped_empty:
+            del apps_by_root[r]
+        warnings.append(
+            f"Ignored {len(dropped_empty)} package.json-based boundary(ies) with no "
+            f"CSS/JSX/JS files under them (likely tooling-only folders, e.g. "
+            f"scripts/, functions/, cypress/): {dropped_empty}"
+        )
+
+    if not apps_by_root:
+        # ALL detected package.json boundaries turned out to be empty
+        # (tooling-only folders — scripts/, functions/, cypress/, etc.)
+        # and NOTHING survived, meaning the real project files have no
+        # boundary at all. This is different from the legitimate "shared/
+        # folder alongside real app boundaries" case (e.g. spec's admin/
+        # customer/shared example) — there, admin/customer DO have real
+        # files, so this branch correctly does NOT fire, and shared files
+        # stay as shared_* for the reachability graph to resolve via real
+        # import evidence. This branch only fires when boundary detection
+        # found nothing usable whatsoever, so SOMETHING must still catch
+        # these files or they'd be permanently unreachable.
+        catch_all_name = os.path.basename(os.path.normpath(root_path)) or "root"
+        apps_by_root[""] = Application(
+            name=catch_all_name,
+            root_path="",
+            has_package_json=False,
+            entry_points=_detect_entry_points(root_path, ""),
+            jsx_files=shared_jsx,
+            js_files=shared_js,
+            css_files=shared_css,
+        )
+        warnings.append(
+            f"Every detected package.json boundary had zero relevant files — falling back to "
+            f"a single catch-all '{catch_all_name}' application at the project root so these "
+            f"files still have somewhere reachability analysis can anchor them."
+        )
+        shared_jsx, shared_js, shared_css = [], [], []
+
     applications = list(apps_by_root.values())
 
     if method == "single_app_fallback" and len(applications) == 1:

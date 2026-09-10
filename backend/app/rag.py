@@ -11,7 +11,7 @@ LLM), this module:
      ONLY the given context, never inventing details
 """
 from .models import Issue
-from .llm_client import call_ollama_chat
+from .llm_client import call_llm_chat
 from .vector_store import retrieve_context
 from .ai_context_builder import build_issue_context, CONTEXT_GUARDRAIL
 
@@ -60,7 +60,7 @@ def explain_issue(issue: Issue, job, collection) -> dict:
         "<a concrete, actionable fix, or \"No action needed\" if this is an isolated duplicate>"
     )
 
-    raw = call_ollama_chat(prompt, system=SYSTEM_PROMPT)
+    raw = call_llm_chat(prompt, system=SYSTEM_PROMPT)
     return _split_explanation_and_recommendation(raw)
 
 
