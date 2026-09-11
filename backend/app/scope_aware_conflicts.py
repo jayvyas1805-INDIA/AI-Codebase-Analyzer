@@ -58,7 +58,34 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from .models import CSSClassDefinitionRef, Issue
 from .relationship_model import RelationshipModel
-from .reachability_lookup import ReachabilityLookup
+from .reachability_lookup import ReachabilityLookup, UNRESOLVED_APP
+
+
+def _readable_apps(apps) -> list:
+    """Sorted app names for display, with the UNRESOLVED_APP sentinel
+    swapped for a human-readable label. Used ONLY for message/scope_analysis
+    text — the raw set (sentinel included) is still what clustering and
+    usage-confirmation logic operate on."""
+    named = sorted(a for a in apps if a != UNRESOLVED_APP)
+    if UNRESOLVED_APP in apps:
+        named.append("(unresolved reach)")
+    return named or ["(unresolved reach)"]
+
+# Properties whose values visibly change layout, position, or appearance —
+# a conflict here is a real risk even if we can't fully confirm interaction.
+# Properties NOT in this set (cursor, transition, outline, user-select,
+# etc.) still get flagged, but as lower severity: worth a look, unlikely to
+# break the page.
+HIGH_IMPACT_PROPERTIES = {
+    "color", "background", "background-color", "background-image",
+    "display", "position", "top", "right", "bottom", "left",
+    "width", "height", "min-width", "min-height", "max-width", "max-height",
+    "margin", "margin-top", "margin-right", "margin-bottom", "margin-left",
+    "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
+    "flex", "flex-direction", "flex-wrap", "justify-content", "align-items",
+    "grid-template-columns", "grid-template-rows", "grid-column", "grid-row",
+    "z-index", "visibility", "opacity", "overflow", "float", "border",
+}
 
 
 def _cluster_by_reach(
@@ -189,8 +216,26 @@ def _classify_cluster(
     # Either only partially conflicting, or fully conflicting but missing
     # usage confirmation / resting on a folder-fallback reachability guess
     # across GENUINELY MULTIPLE applications — real interaction can't be
-    # fully confirmed there, so this stays "potential".
-    severity = "medium" if conflicting_properties == shared_properties else "medium"
+    # fully confirmed there, so `conflict_category` stays "potential"
+    # regardless. `severity` below is a SEPARATE question: if this turns
+    # out to be real, how bad is it? That's decided by (a) what fraction
+    # of the shared properties actually conflict and (b) whether any
+    # conflicting property is layout/appearance-affecting (HIGH_IMPACT_
+    # PROPERTIES) vs purely cosmetic (cursor, transition, outline, etc.).
+    conflict_ratio = len(conflicting_properties) / len(shared_properties)
+    touches_high_impact = bool(conflicting_properties & HIGH_IMPACT_PROPERTIES)
+
+    if touches_high_impact and conflict_ratio >= 0.5:
+        # Most or all of the shared surface conflicts, and it includes
+        # something that changes what the page looks like — a near-miss
+        # of "high", just short of full confirmation.
+        severity = "medium"
+    else:
+        # Either only a small sliver conflicts, or every conflicting
+        # property is cosmetic-only (e.g. just `cursor` differs) — real,
+        # but low priority to act on.
+        severity = "low"
+
     confidence = "medium" if (usage_confirmed and all_import_graph) else "low"
     return "partial_overlap_class", severity, confidence, "potential_conflict"
 
@@ -221,10 +266,11 @@ def detect_scope_aware_conflicts(
             )
             cluster_apps = sorted(set().union(*(reach.apps_for(f) for f in cluster_files)))
             cluster_defs = [d for f in cluster_files for d in definitions_by_file[f]]
+            display_apps = _readable_apps(cluster_apps)
 
             scope_analysis = (
                 f"'.{class_name}' is defined in {', '.join(cluster_files)}, all reachable "
-                f"from application(s) {cluster_apps or ['(unresolved reach)']} — "
+                f"from application(s) {display_apps} — "
                 f"static import evidence shows these CAN affect the same rendering context."
             )
 
@@ -232,13 +278,13 @@ def detect_scope_aware_conflicts(
                 message = (
                     f"'.{class_name}' is defined differently in {', '.join(cluster_files)} — "
                     f"every shared CSS property has a different value, both definitions are "
-                    f"reachable from {cluster_apps}, and a matching JSX usage was confirmed. "
+                    f"reachable from {display_apps}, and a matching JSX usage was confirmed. "
                     f"Whichever file loads last will silently win."
                 )
             elif category == "potential_conflict":
                 message = (
                     f"'.{class_name}' is defined in {', '.join(cluster_files)} with conflicting "
-                    f"properties, and both are reachable from {cluster_apps} — but interaction "
+                    f"properties, and both are reachable from {display_apps} — but interaction "
                     f"could not be fully confirmed (no static JSX usage match, or reachability "
                     f"relied on a folder-based fallback rather than a real import chain). "
                     f"Worth a manual check."
@@ -247,7 +293,7 @@ def detect_scope_aware_conflicts(
                 message = (
                     f"'.{class_name}' is defined identically (or with non-overlapping "
                     f"properties) in {', '.join(cluster_files)}, and both share reach from "
-                    f"{cluster_apps}. Likely safe to consolidate."
+                    f"{display_apps}. Likely safe to consolidate."
                 )
 
             issues.append(
@@ -261,7 +307,7 @@ def detect_scope_aware_conflicts(
                     css_definitions=cluster_defs,
                     jsx_usages=model.jsx_usages.get(class_name, []),
                     conflict_category=category,
-                    reaching_applications=cluster_apps,
+                    reaching_applications=display_apps,
                     scope_analysis=scope_analysis,
                 )
             )
@@ -269,7 +315,7 @@ def detect_scope_aware_conflicts(
         # --- one isolated_duplicate issue if there's real isolation to report ---
         if len(clusters) >= 2:
             all_files_by_cluster = [sorted(c) for c in clusters]
-            per_cluster_apps = [sorted(set().union(*(reach.apps_for(f) for f in c)) or {"(none)"}) for c in clusters]
+            per_cluster_apps = [_readable_apps(set().union(*(reach.apps_for(f) for f in c))) for c in clusters]
             scope_analysis = (
                 f"'.{class_name}' also appears in "
                 f"{'; '.join(f'{files} (apps: {apps})' for files, apps in zip(all_files_by_cluster, per_cluster_apps))} "

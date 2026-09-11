@@ -58,7 +58,7 @@ def health_check():
 
 
 @app.post("/api/scan", response_model=FullAnalysisResult)
-async def scan_upload(file: UploadFile = File(...)):
+async def scan_upload(file: UploadFile = File(...), include_low: bool = False):
     if not file.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only .zip files are accepted.")
 
@@ -119,6 +119,19 @@ async def scan_upload(file: UploadFile = File(...)):
     real_issues = [i for i in issues if i.conflict_category != "isolated_duplicate"]
     isolated = [i for i in issues if i.conflict_category == "isolated_duplicate"]
 
+    # Low-severity findings are real, not noise to throw away — but they're
+    # noisy to LOOK at by default, so they're split out of `issues`/
+    # `total_issues` the same way isolated_duplicate is above, unless the
+    # caller explicitly opts in with include_low=true. Either way, job.issues
+    # (cached via save_job above, BEFORE this split) still holds the full,
+    # unfiltered list — so /api/explain and /api/chat can still look up a
+    # low-severity issue by id even when it's hidden from this response.
+    if include_low:
+        low_severity: list = []
+    else:
+        low_severity = [i for i in real_issues if i.severity == "low"]
+        real_issues = [i for i in real_issues if i.severity != "low"]
+
     return FullAnalysisResult(
         job_id=job_id,
         total_css_files_parsed=len(css_results),
@@ -129,6 +142,7 @@ async def scan_upload(file: UploadFile = File(...)):
         issues=real_issues,
         total_issues=len(real_issues),
         isolated_duplicates=isolated,
+        low_severity_issues=low_severity,
         codebase_map=codebase_map,
         reachability_graph=reachability_graph,
     )

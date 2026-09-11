@@ -25,6 +25,19 @@ from typing import Dict, Optional, Set
 
 from .models import CodebaseMap, ReachabilityGraph
 
+# Sentinel used when a file can't be resolved to ANY application — neither
+# the import graph nor Phase 1's folder-based detection has an opinion.
+# Deliberately NOT an empty set: two unresolved files sharing this sentinel
+# still correctly cluster together as "the same (unknown) context" via
+# _cluster_by_reach's set-intersection logic. An empty set can never
+# intersect with anything (including another empty set), which silently
+# made usage-confirmation impossible for any project where app-detection
+# fails — turning genuine same-app conflicts into permanently-unconfirmed
+# ones. method_for_apps() correctly reports this sentinel as NOT real
+# import-graph evidence, so it still falls back on single_app_certain
+# rather than being mistaken for confirmed multi-app tracing.
+UNRESOLVED_APP = "__unresolved_app__"
+
 
 class ReachabilityLookup:
     def __init__(self, graph: ReachabilityGraph, codebase_map: Optional[CodebaseMap] = None):
@@ -59,14 +72,14 @@ class ReachabilityLookup:
         if css_file_path in self._css_to_apps:
             return self._css_to_apps[css_file_path]
         folder_app = self._folder_app_for_file.get(css_file_path)
-        return {folder_app} if folder_app else set()
+        return {folder_app} if folder_app else {UNRESOLVED_APP}
 
     def jsx_reachable_apps(self, jsx_file_path: str) -> Set[str]:
         """Which application(s) can reach this JSX file (same fallback logic)."""
         if jsx_file_path in self._jsx_to_apps:
             return self._jsx_to_apps[jsx_file_path]
         folder_app = self._folder_app_for_file.get(jsx_file_path)
-        return {folder_app} if folder_app else set()
+        return {folder_app} if folder_app else {UNRESOLVED_APP}
 
     def method_for_apps(self, app_names: Set[str]):
         """

@@ -5,14 +5,23 @@ const API_BASE_URL = "http://127.0.0.1:8000";
 /**
  * Uploads a .zip file to the backend and returns the FullAnalysisResult JSON.
  * Throws an Error with a readable message on failure.
+ *
+ * `includeLow` mirrors the backend's `include_low` query param on
+ * /api/scan. Default is false: low-severity findings are still fully
+ * computed server-side (and remain look-up-able via /api/explain and
+ * /api/chat), but are left out of `issues`/`total_issues` here so the
+ * dashboard isn't cluttered with low-priority noise by default. Pass
+ * `true` explicitly if you add a "show low severity" toggle later.
  */
-export async function analyzeProjectZip(zipFile) {
+export async function analyzeProjectZip(zipFile, includeLow = false) {
   const formData = new FormData();
   formData.append("file", zipFile);
 
+  const url = `${API_BASE_URL}/api/scan?include_low=${includeLow}`;
+
   let response;
   try {
-    response = await fetch(`${API_BASE_URL}/api/scan`, {
+    response = await fetch(url, {
       method: "POST",
       body: formData,
     });

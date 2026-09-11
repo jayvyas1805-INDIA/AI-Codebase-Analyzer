@@ -32,7 +32,9 @@ export default function UploadScreen({ onAnalyzeStart, onAnalyzeComplete, onAnal
 
     onAnalyzeStart();
     try {
-      const result = await analyzeProjectZip(selectedFile);
+      // Explicitly false for now — flip to a state variable here if/when
+      // a "show low severity" toggle is added to this screen.
+      const result = await analyzeProjectZip(selectedFile, false);
       onAnalyzeComplete(result);
     } catch (err) {
       onAnalyzeError(err.message);

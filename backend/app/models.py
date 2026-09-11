@@ -276,5 +276,6 @@ class FullAnalysisResult(BaseModel):
     issues: List[Issue]           # real, actionable findings only (isolated_duplicate excluded)
     total_issues: int             # count of the above — stays "clean" per user request
     isolated_duplicates: List[Issue] = []   # same-name classes proven NOT to interact — informational only, not a problem
+    low_severity_issues: List[Issue] = []   # real findings, but noisy by default — hidden from `issues` unless include_low=true is passed to /api/scan
     codebase_map: Optional[CodebaseMap] = None
     reachability_graph: Optional[ReachabilityGraph] = None
