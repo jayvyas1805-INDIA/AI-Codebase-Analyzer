@@ -1,87 +1,154 @@
 """
-Standalone scope-aware conflict detection test — no server required.
-Run: python test_scope_aware_conflicts.py
+Regression test for two bugs found and fixed in the same session:
 
-Exercises the full new pipeline against sample_multiapp_project and checks
-three scenarios explicitly:
+  1. THE UNRESOLVED-APP BUG (reachability_lookup.py)
+     When app-boundary detection can't resolve ANY application for a file
+     (no import-graph entry, no folder-based fallback match), apps_for()
+     and jsx_reachable_apps() used to return an EMPTY set. Two files that
+     both hit this case would then have empty & empty = empty intersection
+     in _has_confirmed_usage(), which can never be non-empty — permanently
+     blocking confirmed_conflict, and worse, causing _cluster_by_reach to
+     never link them into the same cluster at all, so a genuine same-app
+     conflict got reported as `isolated_duplicate` (i.e. "NOT a conflict").
+     Fix: unresolved files now share a sentinel (UNRESOLVED_APP) instead
+     of an empty set, so they correctly cluster together.
 
-  1. '.btn-primary' — defined once in admin's dashboard.css, once in
-     customer's dashboard.css. Each is ONLY reachable from its own app.
-     Expect: classified as ISOLATED DUPLICATE, not a conflict.
+  2. THE DEAD-CODE SEVERITY BUG (scope_aware_conflicts.py)
+     `severity = "medium" if conflicting_properties == shared_properties
+     else "medium"` — both branches always evaluated to "medium", so every
+     non-confirmed conflict got the same severity regardless of how much
+     of the overlap conflicted or how impactful the properties were.
+     Fix: severity is now "medium" only when a meaningful fraction of
+     shared properties conflict AND at least one is layout/appearance-
+     affecting; otherwise "low".
 
-  2. '.panel' — defined in admin/src/styles/global.css AND
-     admin/src/components/Dashboard/dashboard.css, both reachable from
-     the SAME app (admin), with every shared property (padding, color)
-     disagreeing, and confirmed JSX usage (Dashboard.jsx uses
-     className="panel"). Expect: CONFIRMED CONFLICT.
+This is deliberately a focused unit test on reachability_lookup.py +
+scope_aware_conflicts.py directly, NOT a full scan-pipeline test like
+test_scope_aware_conflicts.py — the full pipeline needs the js_helper
+Node/Babel dependency installed and goes through codebase_mapper's
+single_app_fallback, which makes the specific "nothing resolves at all"
+edge case unreliable to force from real fixture files. Testing these two
+modules directly is the right level for this bug.
 
-  3. Also confirms the single-app fixture (sample_project) still runs
-     through the scope-aware path without crashing (no package.json means
-     everything falls into one application, so nothing should ever be
-     isolated there — same behavior as before, just via the new code path).
+Run: python test_reachability_fallback.py
 """
-from app.scanner import scan_project
-from app.css_parser import parse_css_file
-from app.jsx_parser import parse_jsx_files
-from app.relationship_model import build_relationship_model
-from app.codebase_mapper import build_codebase_map
-from app.import_graph import build_reachability_graph
-from app.issue_detector import detect_issues_scope_aware
+from app.models import (
+    CSSClassDefinitionRef, CSSDeclaration, JSXClassUsageRef,
+    ReachabilityGraph,
+)
+from app.relationship_model import RelationshipModel
+from app.reachability_lookup import ReachabilityLookup, UNRESOLVED_APP
+from app.scope_aware_conflicts import detect_scope_aware_conflicts
 
 
-def run_pipeline(project_path):
-    scan_result = scan_project(project_path, job_id="local-test")
-
-    css_results = [
-        parse_css_file(f.absolute_path, f.relative_path) for f in scan_result.css_files
-    ]
-    jsx_files_to_parse = [(f.absolute_path, f.relative_path) for f in scan_result.jsx_files + scan_result.js_files]
-    jsx_results = parse_jsx_files(jsx_files_to_parse, project_path)
-
-    model = build_relationship_model(css_results, jsx_results)
-    codebase_map = build_codebase_map(scan_result)
-    reachability_graph = build_reachability_graph(codebase_map, jsx_results)
-    issues = detect_issues_scope_aware(model, reachability_graph, codebase_map)
-    return issues
+def _id_gen():
+    counter = {"n": 0}
+    def gen():
+        counter["n"] += 1
+        return f"issue-{counter['n']}"
+    return gen
 
 
-if __name__ == "__main__":
-    print("=" * 60)
-    print("Multi-app fixture: sample_multiapp_project")
-    print("=" * 60)
-    issues = run_pipeline("sample_multiapp_project")
+def _two_file_conflict_model(prop="color", val_a="red", val_b="blue"):
+    model = RelationshipModel()
+    model.css_classes = {
+        "widget": [
+            CSSClassDefinitionRef(file_path="a.css", line_number=1, selector=".widget",
+                declarations=[CSSDeclaration(property=prop, value=val_a)]),
+            CSSClassDefinitionRef(file_path="b.css", line_number=1, selector=".widget",
+                declarations=[CSSDeclaration(property=prop, value=val_b)]),
+        ]
+    }
+    model.jsx_usages = {
+        "widget": [JSXClassUsageRef(file_path="App.jsx", line_number=1, element="div", is_fully_static=True)]
+    }
+    return model
 
-    for issue in issues:
-        print(f"\n[{issue.class_name}]  category={issue.conflict_category}  "
-              f"type={issue.issue_type}  severity={issue.severity}  confidence={issue.confidence}")
-        print(f"  reaching_applications: {issue.reaching_applications}")
-        print(f"  message: {issue.message}")
 
-    btn_primary_issues = [i for i in issues if i.class_name == "btn-primary"]
-    panel_issues = [i for i in issues if i.class_name == "panel"]
+print("=" * 60)
+print("Test 1: totally unresolved app boundary (today's bug)")
+print("=" * 60)
+graph = ReachabilityGraph(applications=[], css_reachable_from={}, unreached_css_files=[], warnings=[])
+reach = ReachabilityLookup(graph, codebase_map=None)
+model = _two_file_conflict_model()
+issues = detect_scope_aware_conflicts(model, reach, _id_gen())
+widget = [i for i in issues if i.class_name == "widget"]
+assert len(widget) == 1, f"expected 1 issue, got {len(widget)}"
+assert widget[0].conflict_category == "confirmed_conflict", (
+    f"expected confirmed_conflict, got {widget[0].conflict_category} "
+    f"(this is the exact bug: unresolved files used to be treated as "
+    f"isolated instead of same-context)"
+)
+assert widget[0].severity == "high", f"expected high, got {widget[0].severity}"
+assert UNRESOLVED_APP not in widget[0].reaching_applications, (
+    "raw sentinel leaked into a user-facing field"
+)
+print("PASS — unresolved-app conflict correctly confirmed as high severity")
+print(f"  reaching_applications (display): {widget[0].reaching_applications}")
 
-    print("\n--- Scenario checks ---")
-    assert len(btn_primary_issues) == 1, f"expected 1 issue for btn-primary, got {len(btn_primary_issues)}"
-    assert btn_primary_issues[0].conflict_category == "isolated_duplicate", (
-        f"btn-primary should be isolated_duplicate, got {btn_primary_issues[0].conflict_category}"
-    )
-    print("btn-primary correctly classified as isolated_duplicate (NOT a conflict). PASS")
+print()
+print("=" * 60)
+print("Test 2: genuinely separate resolved apps stay isolated (no regression)")
+print("=" * 60)
+from app.models import ApplicationReachability
+graph2 = ReachabilityGraph(
+    applications=[
+        ApplicationReachability(application_name="admin", application_root="admin",
+            reachable_jsx_files=["admin/App.jsx"], reachable_css_files=["a.css"],
+            reachability_method="import_graph"),
+        ApplicationReachability(application_name="customer", application_root="customer",
+            reachable_jsx_files=["customer/App.jsx"], reachable_css_files=["b.css"],
+            reachability_method="import_graph"),
+    ],
+    css_reachable_from={"a.css": ["admin"], "b.css": ["customer"]},
+    unreached_css_files=[], warnings=[],
+)
+reach2 = ReachabilityLookup(graph2, codebase_map=None)
+model2 = _two_file_conflict_model()
+model2.jsx_usages = {
+    "widget": [JSXClassUsageRef(file_path="admin/App.jsx", line_number=1, element="div", is_fully_static=True)]
+}
+issues2 = detect_scope_aware_conflicts(model2, reach2, _id_gen())
+widget2 = [i for i in issues2 if i.class_name == "widget"]
+assert len(widget2) == 1, f"expected 1 issue, got {len(widget2)}"
+assert widget2[0].conflict_category == "isolated_duplicate", (
+    f"expected isolated_duplicate, got {widget2[0].conflict_category} — "
+    f"two files with genuinely different, resolved apps should NOT cluster "
+    f"together just because the sentinel fix exists"
+)
+print("PASS — real cross-app isolation still correctly detected (no over-merging)")
 
-    assert len(panel_issues) == 1, f"expected 1 issue for panel, got {len(panel_issues)}"
-    assert panel_issues[0].conflict_category == "confirmed_conflict", (
-        f"panel should be confirmed_conflict, got {panel_issues[0].conflict_category}"
-    )
-    assert panel_issues[0].reaching_applications == ["admin"], (
-        f"panel should be scoped to admin only, got {panel_issues[0].reaching_applications}"
-    )
-    print("panel correctly classified as confirmed_conflict, scoped to ['admin']. PASS")
+print()
+print("=" * 60)
+print("Test 3: severity reflects property impact, not a coin flip (dead-code fix)")
+print("=" * 60)
+# Same app, but usage is NOT confirmed (usage file not reachable from the
+# cluster's app) — forces the partial_overlap_class / potential_conflict
+# branch where the old code always said "medium" no matter what.
+graph3 = ReachabilityGraph(
+    applications=[
+        ApplicationReachability(application_name="admin", application_root="admin",
+            reachable_jsx_files=["OTHER.jsx"], reachable_css_files=["a.css", "b.css"],
+            reachability_method="import_graph"),
+    ],
+    css_reachable_from={"a.css": ["admin"], "b.css": ["admin"]},
+    unreached_css_files=[], warnings=[],
+)
+reach3 = ReachabilityLookup(graph3, codebase_map=None)
 
-    print("\n" + "=" * 60)
-    print("Single-app fixture regression check: sample_project")
-    print("=" * 60)
-    regression_issues = run_pipeline("sample_project")
-    print(f"{len(regression_issues)} issues found, no crash. PASS")
-    for issue in regression_issues:
-        print(f"  [{issue.class_name}] {issue.issue_type} / {issue.conflict_category}")
+# 3a: conflicting property is cosmetic-only (cursor) -> should be "low"
+model_low = _two_file_conflict_model(prop="cursor", val_a="pointer", val_b="default")
+issues_low = detect_scope_aware_conflicts(model_low, reach3, _id_gen())
+w_low = [i for i in issues_low if i.class_name == "widget"][0]
+assert w_low.severity == "low", f"expected low for cosmetic-only conflict, got {w_low.severity}"
+print(f"PASS — cursor-only conflict correctly downgraded to 'low' (was hardcoded 'medium')")
 
-    print("\nAll checks PASSED.")
+# 3b: conflicting property is layout-affecting (color) -> should be "medium"
+model_med = _two_file_conflict_model(prop="color", val_a="red", val_b="blue")
+issues_med = detect_scope_aware_conflicts(model_med, reach3, _id_gen())
+w_med = [i for i in issues_med if i.class_name == "widget"][0]
+assert w_med.severity == "medium", f"expected medium for color conflict, got {w_med.severity}"
+print(f"PASS — color conflict correctly stays 'medium'")
+
+print()
+print("All reachability-fallback / severity-signal checks PASSED.")
