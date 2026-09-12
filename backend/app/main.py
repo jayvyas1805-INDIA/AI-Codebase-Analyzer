@@ -102,7 +102,7 @@ async def scan_upload(file: UploadFile = File(...), include_low: bool = False):
     # Phase 3: classify conflicts using that reachability evidence instead
     # of name-only matching — same class name in 2+ files is now only a
     # candidate, not proof, per the spec's core design principle.
-    issues = detect_issues_scope_aware(model, reachability_graph, codebase_map)
+    issues = detect_issues_scope_aware(model, reachability_graph, codebase_map, jsx_results)
 
     # Cache everything this job needs for on-demand explanation later.
     # NOTE: job.issues keeps the FULL combined list (including isolated

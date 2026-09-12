@@ -51,19 +51,31 @@ def _word_bounded_pattern(token: str, css_selector: bool) -> re.Pattern:
     return re.compile(prefix + re.escape(token) + r'(?![\w-])')
 
 
-def _unique_new_name(stem: str, class_name: str, job) -> str:
+def _existing_class_names(job) -> set:
     existing = set()
     for css_result in job.css_results:
         for rule in css_result.rules:
             existing.update(rule.class_names)
+    return existing
 
-    candidate = f"{stem}-{class_name}"
+
+def _dedupe_name(candidate: str, job) -> str:
+    """Suffixes `candidate` with -2, -3, ... until it doesn't collide with
+    any existing class name in the project. Used for BOTH the mechanical
+    fallback name and any LLM-suggested name (see ai_rename_suggester.py),
+    so uniqueness is guaranteed deterministically regardless of source —
+    the LLM is never trusted to have checked this itself."""
+    existing = _existing_class_names(job)
     if candidate not in existing:
         return candidate
     i = 2
     while f"{candidate}-{i}" in existing:
         i += 1
     return f"{candidate}-{i}"
+
+
+def _unique_new_name(stem: str, class_name: str, job) -> str:
+    return _dedupe_name(f"{stem}-{class_name}", job)
 
 
 def _find_rule_block_end(lines: List[str], start_line: int) -> int:
@@ -85,6 +97,7 @@ def _find_rule_block_end(lines: List[str], start_line: int) -> int:
 
 def _generate_rename(issue: Issue, plan: FixPlan, job) -> Tuple[Dict[str, PatchFile], List[str], str]:
     from .fix_planner import _component_stem  # local import avoids a circular top-level import
+    from .ai_rename_suggester import suggest_class_name  # local import, same reason
 
     manual_review: List[str] = []
     files_map: Dict[str, PatchFile] = {}
@@ -95,7 +108,18 @@ def _generate_rename(issue: Issue, plan: FixPlan, job) -> Tuple[Dict[str, PatchF
     )
     target_css_file = plan.target_file
     stem = _component_stem(target_css_file)
-    new_name = _unique_new_name(stem, issue.class_name, job)
+
+    # Try an LLM-suggested descriptive name first (see ai_rename_suggester.py
+    # for why this is the one place in the pipeline that's LLM-assisted).
+    # Both paths go through the SAME _dedupe_name collision-avoidance, so
+    # uniqueness is guaranteed deterministically no matter which one wins.
+    llm_candidate = suggest_class_name(issue, plan, job)
+    if llm_candidate:
+        new_name = _dedupe_name(llm_candidate, job)
+        naming_note = "AI-suggested name, based on what the component actually does"
+    else:
+        new_name = _unique_new_name(stem, issue.class_name, job)
+        naming_note = "mechanically generated from the file name (no LLM configured, or its suggestion was rejected)"
 
     css_pattern = _word_bounded_pattern(issue.class_name, css_selector=True)
     css_lines = _read_lines(job.root_path, target_css_file)
@@ -158,9 +182,10 @@ def _generate_rename(issue: Issue, plan: FixPlan, job) -> Tuple[Dict[str, PatchF
             files_map[u.file_path] = PatchFile(path=u.file_path, changes=[change])
 
     description = (
-        f"Renamed '.{issue.class_name}' to '.{new_name}' in '{target_css_file}' "
-        f"and updated its JSX usage(s) to match — the file with the smaller blast "
-        f"radius ({plan.blast_radius} usage(s)) was chosen, per the fix plan."
+        f"Renamed '.{issue.class_name}' to '.{new_name}' ({naming_note}) in "
+        f"'{target_css_file}' and updated its JSX usage(s) to match — the file "
+        f"with the smaller blast radius ({plan.blast_radius} usage(s)) was "
+        f"chosen, per the fix plan."
     )
     return files_map, manual_review, description
 

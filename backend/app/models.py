@@ -42,6 +42,14 @@ class CSSRule(BaseModel):
     line_number: int                      # 1-indexed, where the rule starts
     is_supported_selector: bool           # False if selector uses combinators/ids/tags/pseudo-classes
     media_context: Optional[str] = None   # e.g. "(max-width: 768px)" if inside @media, else None
+    # "global" (default, or explicit `:global(...)` in a .module.css file) — enters
+    # normal cross-file conflict detection like any other class.
+    # "module_local" (a plain, unwrapped selector inside a .module.css file) — the
+    # bundler hashes this class name uniquely per file, so it CANNOT collide with a
+    # same-named class elsewhere. Kept out of cross-file matching entirely rather
+    # than risk a false "conflict"/"duplicate"/"unused" flag on something that's
+    # structurally impossible to actually collide.
+    class_scope: str = "global"
 
 
 class CSSFileParseResult(BaseModel):
@@ -68,12 +76,24 @@ class ImportStatement(BaseModel):
     is_external: bool = False              # True for npm packages (react, clsx, etc.)
 
 
+class ModuleClassRef(BaseModel):
+    """One resolved `styles.foo`-style reference to a CSS Modules class,
+    found inside a className expression. `module_source` is the raw import
+    string as written (e.g. "./Button.module.css") — relationship_model.py
+    resolves it to a project-relative path using the same import-resolution
+    already done for the file's `imports` list, so it can match against the
+    actual parsed CSS file."""
+    module_source: str
+    class_name: str
+
+
 class ClassNameUsage(BaseModel):
     element: str                           # JSX tag name, e.g. "div"
     line_number: int
     static_classes: List[str]              # class names we could confidently resolve
     dynamic_expression: Optional[str] = None  # raw source of parts we couldn't resolve
     is_fully_static: bool                  # False if any part of className was conditional/dynamic
+    module_class_refs: List[ModuleClassRef] = []  # `styles.foo` refs resolved via a CSS Modules import
 
 
 class JSXFileParseResult(BaseModel):

@@ -16,7 +16,7 @@ import subprocess
 from typing import List, Optional, Tuple
 
 from .config import BASE_DIR
-from .models import ImportSpecifier, ImportStatement, ClassNameUsage, JSXFileParseResult
+from .models import ImportSpecifier, ImportStatement, ClassNameUsage, ModuleClassRef, JSXFileParseResult
 
 JS_HELPER_SCRIPT = os.path.join(BASE_DIR, "js_helper", "babel_parse.js")
 
@@ -106,6 +106,10 @@ def _raw_result_to_model(
             static_classes=u["static_classes"],
             dynamic_expression=u.get("dynamic_expression"),
             is_fully_static=u["is_fully_static"],
+            module_class_refs=[
+                ModuleClassRef(module_source=r["module_source"], class_name=r["class_name"])
+                for r in u.get("module_class_refs", [])
+            ],
         )
         for u in data.get("classNameUsages", [])
     ]

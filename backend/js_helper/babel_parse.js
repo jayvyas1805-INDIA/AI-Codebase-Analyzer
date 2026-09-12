@@ -31,19 +31,48 @@ const traverse = require("@babel/traverse").default;
 const generate = require("@babel/generator").default;
 
 /**
+ * Scans the top-level import statements ONLY (not a full traverse) for
+ * `import styles from "./x.module.css"` / `import * as styles from ...`,
+ * building a map of local binding name -> raw import source string. Done
+ * as a dedicated pre-pass (rather than relying on traversal order) so it
+ * doesn't matter whether the import appears before or after its usage.
+ */
+function collectModuleImports(ast) {
+  const map = {};
+  for (const node of ast.program.body) {
+    if (
+      node.type === "ImportDeclaration" &&
+      typeof node.source.value === "string" &&
+      node.source.value.endsWith(".module.css")
+    ) {
+      for (const spec of node.specifiers) {
+        if (spec.type === "ImportDefaultSpecifier" || spec.type === "ImportNamespaceSpecifier") {
+          map[spec.local.name] = node.source.value;
+        }
+      }
+    }
+  }
+  return map;
+}
+
+/**
  * Walks a className value expression and does its best to resolve it into
  * known class name strings, even through common dynamic patterns:
  *   - "foo"                                  -> static
  *   - `foo ${x}`                              -> "foo" static, x flagged dynamic
  *   - clsx("foo", cond && "bar", {baz: cond}) -> foo/bar/baz all extracted
  *   - cond ? "a" : "b"                        -> both "a" and "b" extracted
+ *   - styles.foo (styles from a *.module.css import) -> resolved as a
+ *     CSS Modules reference, NOT treated as an opaque dynamic expression —
+ *     see moduleImportsByLocalName param.
  * Anything it truly can't resolve (a bare variable, function call it
  * doesn't recognize, etc.) is kept as raw source text in dynamicExpression
  * so nothing is silently dropped — later analysis can decide how to treat it.
  */
-function extractFromClassNameValue(valueNode) {
+function extractFromClassNameValue(valueNode, moduleImportsByLocalName) {
   const staticClasses = [];
   const dynamicParts = [];
+  const moduleClassRefs = [];
   let fullyStatic = true;
 
   function addStringLiteralText(text) {
@@ -61,10 +90,27 @@ function extractFromClassNameValue(valueNode) {
       case "TemplateLiteral":
         node.quasis.forEach((q) => addStringLiteralText(q.value.raw));
         if (node.expressions.length > 0) {
-          fullyStatic = false;
-          node.expressions.forEach((e) => dynamicParts.push(generate(e).code));
+          node.expressions.forEach((e) => handleNode(e));
         }
         break;
+
+      case "MemberExpression": {
+        const objectName = node.object && node.object.name;
+        let propertyName = null;
+        if (!node.computed && node.property && node.property.name) {
+          propertyName = node.property.name;
+        } else if (node.computed && node.property && node.property.type === "StringLiteral") {
+          propertyName = node.property.value;
+        }
+        const moduleSource = objectName && moduleImportsByLocalName[objectName];
+        if (moduleSource && propertyName) {
+          moduleClassRefs.push({ source: moduleSource, className: propertyName });
+        } else {
+          fullyStatic = false;
+          dynamicParts.push(generate(node).code);
+        }
+        break;
+      }
 
       case "CallExpression": {
         const calleeName =
@@ -75,6 +121,8 @@ function extractFromClassNameValue(valueNode) {
           node.arguments.forEach((arg) => {
             if (arg.type === "StringLiteral") {
               addStringLiteralText(arg.value);
+            } else if (arg.type === "MemberExpression") {
+              handleNode(arg);
             } else if (arg.type === "ObjectExpression") {
               arg.properties.forEach((prop) => {
                 if (!prop.key || prop.computed) {
@@ -104,6 +152,8 @@ function extractFromClassNameValue(valueNode) {
           fullyStatic = false;
           if (node.right.type === "StringLiteral") {
             addStringLiteralText(node.right.value);
+          } else if (node.right.type === "MemberExpression") {
+            handleNode(node.right);
           } else {
             dynamicParts.push(generate(node.right).code);
           }
@@ -117,11 +167,15 @@ function extractFromClassNameValue(valueNode) {
         fullyStatic = false;
         if (node.consequent.type === "StringLiteral") {
           addStringLiteralText(node.consequent.value);
+        } else if (node.consequent.type === "MemberExpression") {
+          handleNode(node.consequent);
         } else {
           dynamicParts.push(generate(node.consequent).code);
         }
         if (node.alternate.type === "StringLiteral") {
           addStringLiteralText(node.alternate.value);
+        } else if (node.alternate.type === "MemberExpression") {
+          handleNode(node.alternate);
         } else {
           dynamicParts.push(generate(node.alternate).code);
         }
@@ -138,7 +192,12 @@ function extractFromClassNameValue(valueNode) {
   return {
     staticClasses: [...new Set(staticClasses)],
     dynamicExpression: dynamicParts.length > 0 ? dynamicParts.join(" | ") : null,
+    // A pure styles.foo reference (or several, e.g. inside clsx) with no
+    // OTHER unresolved parts is just as confidently known as a plain string
+    // literal — it shouldn't count against fullyStatic just because it came
+    // through a MemberExpression node instead of a StringLiteral node.
     isFullyStatic: fullyStatic,
+    moduleClassRefs,
   };
 }
 
@@ -161,6 +220,7 @@ function parseOneFile(code) {
 
   const imports = [];
   const classNameUsages = [];
+  const moduleImportsByLocalName = collectModuleImports(ast);
 
   traverse(ast, {
     ImportDeclaration(path) {
@@ -195,13 +255,13 @@ function parseOneFile(code) {
 
       let result;
       if (classNameAttr.value === null) {
-        result = { staticClasses: [], dynamicExpression: null, isFullyStatic: true };
+        result = { staticClasses: [], dynamicExpression: null, isFullyStatic: true, moduleClassRefs: [] };
       } else if (classNameAttr.value.type === "StringLiteral") {
-        result = extractFromClassNameValue(classNameAttr.value);
+        result = extractFromClassNameValue(classNameAttr.value, moduleImportsByLocalName);
       } else if (classNameAttr.value.type === "JSXExpressionContainer") {
-        result = extractFromClassNameValue(classNameAttr.value.expression);
+        result = extractFromClassNameValue(classNameAttr.value.expression, moduleImportsByLocalName);
       } else {
-        result = { staticClasses: [], dynamicExpression: null, isFullyStatic: true };
+        result = { staticClasses: [], dynamicExpression: null, isFullyStatic: true, moduleClassRefs: [] };
       }
 
       classNameUsages.push({
@@ -210,6 +270,10 @@ function parseOneFile(code) {
         static_classes: result.staticClasses,
         dynamic_expression: result.dynamicExpression,
         is_fully_static: result.isFullyStatic,
+        module_class_refs: result.moduleClassRefs.map((r) => ({
+          module_source: r.source,
+          class_name: r.className,
+        })),
       });
     },
   });

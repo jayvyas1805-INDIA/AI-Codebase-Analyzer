@@ -31,6 +31,21 @@ from .models import CSSDeclaration, CSSRule, CSSFileParseResult
 SIMPLE_CLASS_SELECTOR = re.compile(r"^(\.[a-zA-Z_][\w-]*)+$")
 CLASS_TOKEN = re.compile(r"\.([a-zA-Z_][\w-]*)")
 
+# CSS Modules escape hatch: `:global(.foo)` inside a `.module.css` file means
+# ".foo" is deliberately NOT hashed/scoped — it's a real global class, same
+# as in a plain CSS file, and should go through normal cross-file conflict
+# detection. Anything else in a .module.css file IS hashed per-file by the
+# bundler and can't collide with a same-named class elsewhere.
+GLOBAL_WRAPPER = re.compile(r"^:global\(\s*(.+?)\s*\)$")
+
+
+def _strip_global_wrapper(selector_part: str):
+    """Returns (inner_selector, was_wrapped)."""
+    m = GLOBAL_WRAPPER.match(selector_part)
+    if m:
+        return m.group(1), True
+    return selector_part, False
+
 
 def _serialize(tokens) -> str:
     return tinycss2.serialize(tokens).strip()
@@ -40,15 +55,19 @@ def _extract_class_names(selector_text: str):
     """
     A selector can be a comma-separated list of alternatives, e.g.
     ".container, .card". Each alternative is checked independently.
-    Returns (class_names, is_supported).
+    Returns (class_names, is_supported, has_global_wrapper).
     """
     parts = [p.strip() for p in selector_text.split(",") if p.strip()]
     class_names: List[str] = []
     all_supported = True
+    has_global_wrapper = False
 
     for part in parts:
-        if SIMPLE_CLASS_SELECTOR.match(part):
-            class_names.extend(CLASS_TOKEN.findall(part))
+        inner, was_wrapped = _strip_global_wrapper(part)
+        if was_wrapped:
+            has_global_wrapper = True
+        if SIMPLE_CLASS_SELECTOR.match(inner):
+            class_names.extend(CLASS_TOKEN.findall(inner))
         else:
             all_supported = False
 
@@ -60,7 +79,7 @@ def _extract_class_names(selector_text: str):
             seen.add(name)
             unique.append(name)
 
-    return unique, all_supported
+    return unique, all_supported, has_global_wrapper
 
 
 def _parse_declarations(content_tokens) -> List[CSSDeclaration]:
@@ -82,12 +101,17 @@ def _walk_rules(
     out_rules: List[CSSRule],
     parse_errors: List[str],
     skipped_at_rules: List[str],
+    is_module_file: bool,
 ):
     for rule in rules:
         if rule.type == "qualified-rule":
             selector_text = _serialize(rule.prelude)
-            class_names, supported = _extract_class_names(selector_text)
+            class_names, supported, has_global_wrapper = _extract_class_names(selector_text)
             declarations = _parse_declarations(rule.content)
+
+            class_scope = "global"
+            if is_module_file and not has_global_wrapper:
+                class_scope = "module_local"
 
             out_rules.append(
                 CSSRule(
@@ -98,6 +122,7 @@ def _walk_rules(
                     line_number=rule.source_line,
                     is_supported_selector=supported,
                     media_context=media_context,
+                    class_scope=class_scope,
                 )
             )
 
@@ -114,6 +139,7 @@ def _walk_rules(
                     out_rules,
                     parse_errors,
                     skipped_at_rules,
+                    is_module_file,
                 )
             else:
                 skipped_at_rules.append(f"@{rule.at_keyword} (line {rule.source_line})")
@@ -133,8 +159,9 @@ def parse_css_file(absolute_path: str, relative_path: str) -> CSSFileParseResult
     out_rules: List[CSSRule] = []
     parse_errors: List[str] = []
     skipped_at_rules: List[str] = []
+    is_module_file = relative_path.endswith(".module.css")
 
-    _walk_rules(top_level_rules, relative_path, None, out_rules, parse_errors, skipped_at_rules)
+    _walk_rules(top_level_rules, relative_path, None, out_rules, parse_errors, skipped_at_rules, is_module_file)
 
     return CSSFileParseResult(
         file_path=relative_path,

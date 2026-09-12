@@ -23,6 +23,7 @@ from .models import Issue
 from .relationship_model import RelationshipModel
 from .reachability_lookup import ReachabilityLookup
 from .scope_aware_conflicts import detect_scope_aware_conflicts
+from .tailwind_conflicts import detect_tailwind_conflicts
 
 
 def _classify_definitions(definitions) -> Optional[Tuple[str, str]]:
@@ -206,7 +207,9 @@ def detect_issues(model: RelationshipModel) -> List[Issue]:
     return issues
 
 
-def detect_issues_scope_aware(model: RelationshipModel, reachability_graph, codebase_map=None) -> List[Issue]:
+def detect_issues_scope_aware(
+    model: RelationshipModel, reachability_graph, codebase_map=None, jsx_results=None
+) -> List[Issue]:
     """
     Phase 3 entry point. Same unused/undefined/unimported detection as
     before (those don't need cross-file scope awareness), but conflict/
@@ -219,6 +222,15 @@ def detect_issues_scope_aware(model: RelationshipModel, reachability_graph, code
     trace a file — see reachability_lookup.py's docstring for why that
     fallback matters (without it, real-world import patterns the graph
     can't trace get silently misreported as isolated).
+
+    jsx_results (optional, but should always be passed by main.py) is
+    needed SEPARATELY from `model` for Tailwind conflict detection — see
+    tailwind_conflicts.py's docstring for why that check operates on raw
+    per-usage class lists rather than RelationshipModel, which flattens
+    usages by class name across the whole project and loses "which classes
+    appeared together on one element." Kept optional here (default None ->
+    skip Tailwind checks) so existing callers/tests that only pass a model
+    don't break.
     """
     issues: List[Issue] = []
     counter = 0
@@ -233,4 +245,6 @@ def detect_issues_scope_aware(model: RelationshipModel, reachability_graph, code
     issues.extend(_detect_unused_classes(model, next_id))
     issues.extend(_detect_undefined_classes(model, next_id))
     issues.extend(_detect_unimported_css(model, next_id))
+    if jsx_results is not None:
+        issues.extend(detect_tailwind_conflicts(jsx_results, next_id))
     return issues
