@@ -18,7 +18,7 @@ Then open http://127.0.0.1:8000/docs for interactive API docs.
 import os
 import shutil
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from .zip_handler import create_job_workspace, safe_extract_zip
@@ -38,15 +38,18 @@ from .patch_generator import generate_patch
 from .sandbox_validator import validate_patch_in_sandbox
 from .fix_loop import attempt_validated_fix
 from .job_cache import save_job, get_job
+from .rate_limit import rate_limit_scan, rate_limit_llm
+from .config import CORS_ALLOWED_ORIGINS, MAX_UPLOAD_SIZE_MB
 from .models import FullAnalysisResult, Issue, ChatRequest, ChatResponse, ChatMessage, FixPlan, Patch, ValidationResult, FixResult
 
 app = FastAPI(title="React Codebase Analyzer")
 
-# Wide open for local dev so the Vite frontend (different port) can call this.
-# Tighten allow_origins to your actual frontend URL before deploying anywhere.
+# Real allowlist, not "*" — see config.py's CORS_ALLOWED_ORIGINS. Defaults
+# to the Vite dev server's usual ports, so local dev is unaffected; set
+# the CORS_ALLOWED_ORIGINS env var before deploying anywhere else.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -58,15 +61,34 @@ def health_check():
 
 
 @app.post("/api/scan", response_model=FullAnalysisResult)
-async def scan_upload(file: UploadFile = File(...), include_low: bool = False):
+async def scan_upload(
+    file: UploadFile = File(...),
+    include_low: bool = False,
+    _rl: None = Depends(rate_limit_scan),
+):
     if not file.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only .zip files are accepted.")
 
     job_id, job_dir = create_job_workspace()
     zip_path = os.path.join(job_dir, "upload.zip")
 
+    # Stream to disk in chunks and abort as soon as the size cap is
+    # crossed, rather than buffering the whole file first and checking
+    # after — the whole point of a size limit is to bound how much gets
+    # written/held in memory in the first place.
+    max_bytes = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    written = 0
     with open(zip_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        while chunk := await file.read(1024 * 1024):
+            written += len(chunk)
+            if written > max_bytes:
+                f.close()
+                shutil.rmtree(job_dir, ignore_errors=True)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Upload exceeds the {MAX_UPLOAD_SIZE_MB} MB limit.",
+                )
+            f.write(chunk)
 
     try:
         source_root = safe_extract_zip(zip_path, job_dir)
@@ -149,7 +171,7 @@ async def scan_upload(file: UploadFile = File(...), include_low: bool = False):
 
 
 @app.post("/api/explain/{job_id}/{issue_id}", response_model=Issue)
-def explain_issue_endpoint(job_id: str, issue_id: str):
+def explain_issue_endpoint(job_id: str, issue_id: str, _rl: None = Depends(rate_limit_llm)):
     job = get_job(job_id)
     if job is None:
         raise HTTPException(
@@ -177,7 +199,7 @@ def explain_issue_endpoint(job_id: str, issue_id: str):
 
 
 @app.post("/api/chat/{job_id}/{issue_id}", response_model=ChatResponse)
-def chat_endpoint(job_id: str, issue_id: str, body: ChatRequest):
+def chat_endpoint(job_id: str, issue_id: str, body: ChatRequest, _rl: None = Depends(rate_limit_llm)):
     job = get_job(job_id)
     if job is None:
         raise HTTPException(
@@ -213,7 +235,7 @@ def chat_endpoint(job_id: str, issue_id: str, body: ChatRequest):
 
 
 @app.post("/api/plan-fix/{job_id}/{issue_id}", response_model=FixPlan)
-def plan_fix_endpoint(job_id: str, issue_id: str):
+def plan_fix_endpoint(job_id: str, issue_id: str, _rl: None = Depends(rate_limit_scan)):
     """
     Phase 5 (spec section 14): deterministic fix plan for one issue —
     which strategy, which file gets changed, and why (blast radius).
@@ -234,12 +256,18 @@ def plan_fix_endpoint(job_id: str, issue_id: str):
 
 
 @app.post("/api/generate-patch/{job_id}/{issue_id}", response_model=Patch)
-def generate_patch_endpoint(job_id: str, issue_id: str):
+def generate_patch_endpoint(job_id: str, issue_id: str, _rl: None = Depends(rate_limit_llm)):
     """
     Phase 5 (spec section 16): line-level patch for one issue, computed
     from the fix plan above. Never applied automatically — the frontend
     shows the diff and the user must explicitly approve it (spec section
     24: "require explicit user approval before applying a validated patch").
+
+    Rate-limited on the LLM tier: for rename_scoped_class fixes, this
+    calls ai_rename_suggester.py to propose a descriptive class name —
+    see that module for why an LLM is involved here specifically, and why
+    it's safe (the suggestion is validated/deduplicated, never trusted as
+    a raw file edit).
     """
     job = get_job(job_id)
     if job is None:
@@ -257,7 +285,7 @@ def generate_patch_endpoint(job_id: str, issue_id: str):
 
 
 @app.post("/api/validate-patch/{job_id}/{issue_id}", response_model=ValidationResult)
-def validate_patch_endpoint(job_id: str, issue_id: str):
+def validate_patch_endpoint(job_id: str, issue_id: str, _rl: None = Depends(rate_limit_scan)):
     """
     Phase 6 (spec section 17): apply the current plan's patch to a
     throwaway sandbox copy, re-run the full analyzer, and report whether
@@ -280,7 +308,7 @@ def validate_patch_endpoint(job_id: str, issue_id: str):
 
 
 @app.post("/api/fix/{job_id}/{issue_id}", response_model=FixResult)
-def fix_endpoint(job_id: str, issue_id: str):
+def fix_endpoint(job_id: str, issue_id: str, _rl: None = Depends(rate_limit_llm)):
     """
     Phase 6 (spec section 19): the full iterative loop — plan, patch,
     validate; on failure, retry with the next-cheapest candidate, up to 3

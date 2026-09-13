@@ -61,3 +61,35 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
 # Ollama uninstalled) and nothing breaks.
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+
+# ---- API security (Phase D slice 2) ----
+# Comma-separated list of allowed frontend origins, e.g.
+# "http://localhost:5173,https://myapp.example.com". Defaults to the
+# Vite dev server's usual ports so local dev keeps working unmodified —
+# but this is a real allowlist now, not "*". Override via env var before
+# deploying anywhere other than localhost.
+CORS_ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv(
+        "CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",") if o.strip()
+]
+
+# Reject uploads bigger than this before they're even fully written to
+# disk (see main.py's streamed size check) — protects against someone
+# uploading a multi-GB file and exhausting disk/memory.
+MAX_UPLOAD_SIZE_MB = int(os.getenv("MAX_UPLOAD_SIZE_MB", "50"))
+
+# Reject a zip whose TOTAL uncompressed content would exceed this, checked
+# from the zip's own directory listing BEFORE extracting anything — the
+# classic "zip bomb" defense (a tiny compressed file that decompresses to
+# gigabytes). See zip_handler.py.
+MAX_UNCOMPRESSED_SIZE_MB = int(os.getenv("MAX_UNCOMPRESSED_SIZE_MB", "500"))
+
+# Simple in-memory per-IP rate limiting (see rate_limit.py) — good enough
+# for a single-process dev/small-deployment setup; the same multi-worker
+# caveat as job_cache.py's in-memory dict applies (state isn't shared
+# across worker processes). Two tiers: a looser one for /api/scan (cheap,
+# local, no LLM call), a tighter one for anything that calls an LLM
+# (explain/chat/fix) since those cost real money per request.
+RATE_LIMIT_SCAN_PER_MINUTE = int(os.getenv("RATE_LIMIT_SCAN_PER_MINUTE", "10"))
+RATE_LIMIT_LLM_PER_MINUTE = int(os.getenv("RATE_LIMIT_LLM_PER_MINUTE", "20"))

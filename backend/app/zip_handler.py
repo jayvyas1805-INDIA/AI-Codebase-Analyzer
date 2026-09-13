@@ -6,7 +6,7 @@ import uuid
 import zipfile
 from typing import Tuple
 
-from .config import WORKSPACE_DIR
+from .config import WORKSPACE_DIR, MAX_UNCOMPRESSED_SIZE_MB
 
 
 def create_job_workspace() -> Tuple[str, str]:
@@ -22,10 +22,23 @@ def create_job_workspace() -> Tuple[str, str]:
 
 def safe_extract_zip(zip_path: str, extract_to: str) -> str:
     """
-    Extracts a zip file, guarding against "zip slip": a malicious zip whose
-    internal filenames contain "../" sequences designed to write files
-    OUTSIDE the intended folder. We check every entry's resolved path stays
-    inside extract_to/source before extracting anything.
+    Extracts a zip file, guarding against two classes of malicious zip:
+
+    1. "Zip slip": internal filenames containing "../" sequences designed
+       to write files OUTSIDE the intended folder. Every entry's resolved
+       path is checked to stay inside extract_to/source before extracting
+       anything.
+    2. "Zip bomb": a small COMPRESSED file that decompresses to an
+       enormous size, exhausting disk space. zipfile's own directory
+       listing (ZipInfo.file_size, the DECLARED uncompressed size) is
+       summed and checked against MAX_UNCOMPRESSED_SIZE_MB BEFORE any
+       extraction happens — so a bomb is rejected in milliseconds, not
+       after it's already filled the disk. (This trusts the zip's
+       declared sizes rather than re-verifying by decompressing, which is
+       the same tradeoff most zip-bomb defenses make — an attacker could
+       lie about file_size, but a corrupted/truncated result from that is
+       caught by CRC validation during the real extractall() below rather
+       than silently accepted.)
 
     Returns the path that should be treated as the project's root folder
     (handles the common case where the zip contains one top-level folder,
@@ -36,6 +49,16 @@ def safe_extract_zip(zip_path: str, extract_to: str) -> str:
     source_dir_abs = os.path.abspath(source_dir)
 
     with zipfile.ZipFile(zip_path, "r") as zf:
+        total_uncompressed = sum(member.file_size for member in zf.infolist())
+        max_bytes = MAX_UNCOMPRESSED_SIZE_MB * 1024 * 1024
+        if total_uncompressed > max_bytes:
+            raise ValueError(
+                f"Zip rejected: would extract to "
+                f"{total_uncompressed / (1024 * 1024):.1f} MB, exceeding the "
+                f"{MAX_UNCOMPRESSED_SIZE_MB} MB limit. If this is a legitimate "
+                f"large project, raise MAX_UNCOMPRESSED_SIZE_MB."
+            )
+
         for member in zf.namelist():
             member_path = os.path.normpath(os.path.join(source_dir_abs, member))
             if not member_path.startswith(source_dir_abs):
