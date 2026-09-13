@@ -1,15 +1,26 @@
 """
-Simple in-memory store so /api/explain/{job_id}/{issue_id} can reuse a job's
-already-parsed CSS/JSX data (to lazily build the vector store) and update an
-issue's ai_explanation in place, without re-parsing or re-scanning anything.
+In-memory store (fronting a SQLite-backed persistence layer, see db.py) so
+/api/explain/{job_id}/{issue_id} can reuse a job's already-parsed CSS/JSX
+data (to lazily build the vector store) and update an issue's
+ai_explanation in place, without re-parsing or re-scanning anything.
 
-NOTE: this is per-process memory. Fine for local dev with a single uvicorn
-worker (the default). It resets on server restart, and won't work if you
-later run multiple worker processes — acceptable tradeoff for an MVP.
+PERSISTENCE (see db.py's docstring for the full rationale): save_job()
+writes through to SQLite, and get_job() falls back to loading from SQLite
+on a cache miss — so a backend restart no longer forces a full re-scan,
+just a rebuild of THIS in-memory dict from what's already in the DB. The
+in-memory dict is still the source of truth for chat_history / last_plan /
+last_patch / last_validation / last_fix_result / ai_explanation / the
+vector store `collection` — none of that is persisted (v1 scope, see
+db.py). Losing those on restart is expected: they're cheap to regenerate
+(one LLM call or one deterministic fix-plan computation), unlike the full
+scan this module now protects against having to redo.
 """
 from typing import Dict, List, Optional
 
+from . import db
 from .models import Issue, CSSFileParseResult, JSXFileParseResult
+
+db.init_db()
 
 
 class JobData:
@@ -52,7 +63,22 @@ def save_job(
     root_path: str = None,
 ) -> None:
     _JOBS[job_id] = JobData(issues, css_results, jsx_results, codebase_map, reachability_graph, root_path)
+    db.persist_scan(job_id, root_path, issues, css_results, jsx_results, codebase_map, reachability_graph)
 
 
 def get_job(job_id: str) -> Optional[JobData]:
-    return _JOBS.get(job_id)
+    if job_id in _JOBS:
+        return _JOBS[job_id]
+
+    # Cache miss — either a bad job_id, or a backend restart since this
+    # job was scanned. Try SQLite before giving up.
+    persisted = db.load_scan(job_id)
+    if persisted is None:
+        return None
+
+    job = JobData(
+        persisted.issues, persisted.css_results, persisted.jsx_results,
+        persisted.codebase_map, persisted.reachability_graph, persisted.root_path,
+    )
+    _JOBS[job_id] = job  # repopulate the in-memory cache so this only happens once per job per process
+    return job

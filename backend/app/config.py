@@ -6,13 +6,21 @@ later want to support .ts/.tsx or change ignored folders, you change one file.
 import os
 from dotenv import load_dotenv
 
-load_dotenv(r"C:\Users\Ambika Enterprise\OneDrive\Desktop\code analyzer\backend\.env")  # Load environment variables from .env file if present
-
-# Root of the backend project (the "backend/" folder itself)
+# Root of the backend project (the "backend/" folder itself) — computed
+# BEFORE load_dotenv() so the .env lookup itself is portable, unlike a
+# hardcoded absolute path (which only works on the machine/folder location
+# it was written for).
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(BASE_DIR, ".env"))  # Load environment variables from .env file if present
 
 # Where extracted/uploaded projects live during analysis
 WORKSPACE_DIR = os.path.join(BASE_DIR, "workspace")
+
+# SQLite database persisting scan results across backend restarts (see
+# db.py). A file path, not a connection string — swapping to Postgres
+# later means replacing db.py's connection logic, not this constant or
+# job_cache.py's public save_job()/get_job() API.
+DB_PATH = os.path.join(BASE_DIR, "analyzer.db")
 
 # MVP scope: React projects only. No .ts/.tsx/.py/.java etc.
 ALLOWED_EXTENSIONS = {".jsx", ".js", ".css"}
