@@ -75,7 +75,12 @@ def _dedupe_name(candidate: str, job) -> str:
 
 
 def _unique_new_name(stem: str, class_name: str, job) -> str:
-    return _dedupe_name(f"{stem}-{class_name}", job)
+    # filename_classname convention (see ai_rename_suggester.py's module
+    # docstring) — "stem" is already the lowercased file stem computed by
+    # fix_planner._component_stem, so this mirrors
+    # ai_rename_suggester.mechanical_class_name exactly for the mechanical
+    # (no-LLM / rejected-LLM-suggestion) path.
+    return _dedupe_name(f"{stem}_{class_name}", job)
 
 
 def _find_rule_block_end(lines: List[str], start_line: int) -> int:

@@ -3,7 +3,7 @@ import IssueList from "./IssueList.jsx";
 import IssueDetail from "./IssueDetail.jsx";
 import ChatPanel from "./ChatPanel.jsx";
 import SummaryBar from "./SummaryBar.jsx";
-import { explainIssue, sendChatMessage } from "../api/analysisApi.js";
+import { explainIssue, sendChatMessage, requestFix, downloadFixedProject } from "../api/analysisApi.js";
 
 function useIsMobile(breakpoint = 900) {
   const [isMobile, setIsMobile] = useState(
@@ -32,6 +32,12 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
   const [chatHistories, setChatHistories] = useState({});
   const [chatSendingId, setChatSendingId] = useState(null);
   const [chatError, setChatError] = useState(null);
+
+  const [fixResults, setFixResults] = useState({}); // issueId -> FixResult
+  const [fixingId, setFixingId] = useState(null);
+  const [fixError, setFixError] = useState(null);
+  const [downloadingId, setDownloadingId] = useState(null);
+  const [downloadError, setDownloadError] = useState(null);
 
   const isMobile = useIsMobile();
 
@@ -81,6 +87,39 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
     [result.job_id, selectedIssue]
   );
 
+  const handleRequestFix = useCallback(
+    async (issue) => {
+      if (!issue) return;
+      setFixError(null);
+      setFixingId(issue.id);
+      try {
+        const fixResult = await requestFix(result.job_id, issue.id);
+        setFixResults((prev) => ({ ...prev, [issue.id]: fixResult }));
+      } catch (err) {
+        setFixError(err.message);
+      } finally {
+        setFixingId(null);
+      }
+    },
+    [result]
+  );
+
+  const handleDownloadFixedProject = useCallback(
+    async (issue) => {
+      if (!issue) return;
+      setDownloadError(null);
+      setDownloadingId(issue.id);
+      try {
+        await downloadFixedProject(result.job_id, issue.id);
+      } catch (err) {
+        setDownloadError(err.message);
+      } finally {
+        setDownloadingId(null);
+      }
+    },
+    [result.job_id]
+  );
+
   const hasParseWarnings =
     result.css_parse_errors.length > 0 || result.jsx_parse_errors.length > 0;
 
@@ -94,6 +133,13 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
       isMobile={isMobile}
       isExplaining={explainingId === selectedIssue?.id}
       explainError={explainError}
+      fixResult={selectedIssue ? fixResults[selectedIssue.id] : null}
+      isFixing={fixingId === selectedIssue?.id}
+      fixError={fixError}
+      isDownloading={downloadingId === selectedIssue?.id}
+      downloadError={downloadError}
+      onRequestFix={() => handleRequestFix(selectedIssue)}
+      onDownloadFixedProject={() => handleDownloadFixedProject(selectedIssue)}
     />
   );
 

@@ -20,6 +20,7 @@ import shutil
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from .zip_handler import create_job_workspace, safe_extract_zip
 from .scanner import scan_project
@@ -37,6 +38,7 @@ from .fix_planner import plan_fix
 from .patch_generator import generate_patch
 from .sandbox_validator import validate_patch_in_sandbox
 from .fix_loop import attempt_validated_fix
+from .fix_apply import build_fixed_project_zip
 from .job_cache import save_job, get_job
 from .rate_limit import rate_limit_scan, rate_limit_llm
 from .config import CORS_ALLOWED_ORIGINS, MAX_UPLOAD_SIZE_MB
@@ -327,4 +329,72 @@ def fix_endpoint(job_id: str, issue_id: str, _rl: None = Depends(rate_limit_llm)
     if issue is None:
         raise HTTPException(status_code=404, detail="Issue not found for this job.")
 
-    return attempt_validated_fix(issue, job)
+    result = attempt_validated_fix(issue, job)
+
+    # Cache the result on the job (same convention chat_commands.py's
+    # "Fix it" handler already uses) so a follow-up call to
+    # /api/fix/{job_id}/{issue_id}/download doesn't have to redo the
+    # plan-patch-validate loop from scratch.
+    job.last_fix_result[issue_id] = result
+    if result.attempts:
+        job.last_patch[issue_id] = result.attempts[-1].patch
+        job.last_validation[issue_id] = result.attempts[-1].validation
+
+    return result
+
+
+@app.post("/api/fix/{job_id}/{issue_id}/download")
+def download_fixed_project(job_id: str, issue_id: str, _rl: None = Depends(rate_limit_llm)):
+    """
+    Packages the project as a downloadable .zip with the validated fix for
+    `issue_id` actually applied to the files on disk.
+
+    This is the one place in the API that produces real file changes the
+    user can keep — everywhere else (/api/fix, /api/validate-patch, chat)
+    only ever plans/previews/sandbox-tests a fix, per spec section 24
+    ("never applies anything to the real project without explicit user
+    approval"). Calling THIS endpoint (e.g. clicking a "Download fixed
+    project" button, after reviewing the fix) is that approval.
+
+    If /api/fix hasn't been called yet for this issue (so there's no
+    cached job.last_fix_result to reuse), this runs the full
+    plan-patch-validate loop itself first — so this endpoint always
+    "just works" standalone, even if the fix step's own response never
+    handed back a zip.
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found. Jobs only live in memory — re-upload and re-scan if the server restarted.",
+        )
+
+    issue = next((i for i in job.issues if i.id == issue_id), None)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="Issue not found for this job.")
+
+    fix_result = job.last_fix_result.get(issue_id)
+    if fix_result is None:
+        fix_result = attempt_validated_fix(issue, job)
+        job.last_fix_result[issue_id] = fix_result
+        if fix_result.attempts:
+            job.last_patch[issue_id] = fix_result.attempts[-1].patch
+            job.last_validation[issue_id] = fix_result.attempts[-1].validation
+
+    if not fix_result.success or not fix_result.attempts:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No validated fix is available to package for download: {fix_result.final_message}",
+        )
+
+    patch = fix_result.attempts[-1].patch
+    try:
+        zip_path = build_fixed_project_zip(job, patch, issue_id, job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=f"fixed_project_{issue_id}.zip",
+    )

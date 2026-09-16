@@ -106,3 +106,75 @@ export async function sendChatMessage(jobId, issueId, message) {
 
   return response.json();
 }
+
+/**
+ * Runs the full plan -> patch -> sandbox-validate fix loop for one issue
+ * (POST /api/fix/{job_id}/{issue_id}). Nothing is applied to the real
+ * project yet — this only proposes and validates a fix, returning a
+ * FixResult the UI can show (attempts, validation notes, success/fail).
+ */
+export async function requestFix(jobId, issueId) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/fix/${jobId}/${issueId}`, {
+      method: "POST",
+    });
+  } catch (networkError) {
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
+  }
+
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail || detail;
+    } catch {
+      // response wasn't JSON — keep statusText
+    }
+    throw new Error(`Fix failed: ${detail}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Downloads a .zip of the project with the validated fix for `issueId`
+ * actually applied to the files. Calls
+ * POST /api/fix/{job_id}/{issue_id}/download, which re-runs the fix loop
+ * itself if requestFix() above hasn't been called yet for this issue — so
+ * this always works standalone, even without a prior /api/fix call.
+ *
+ * Triggers a real browser download rather than returning JSON, since the
+ * response body is the zip file's bytes.
+ */
+export async function downloadFixedProject(jobId, issueId) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/fix/${jobId}/${issueId}/download`, {
+      method: "POST",
+    });
+  } catch (networkError) {
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
+  }
+
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail || detail;
+    } catch {
+      // response wasn't JSON — keep statusText
+    }
+    throw new Error(`Could not download the fixed project: ${detail}`);
+  }
+
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `fixed_project_${issueId}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}

@@ -2,7 +2,20 @@ import { SEVERITY_META, ISSUE_TYPE_META, FILE_LEVEL_ISSUE_TYPES } from "../utils
 import DiffTable from "./DiffTable.jsx";
 import SkeletonLines from "./SkeletonLines.jsx";
 
-export default function IssueDetail({ issue, onBack, isMobile, isExplaining, explainError }) {
+export default function IssueDetail({
+  issue,
+  onBack,
+  isMobile,
+  isExplaining,
+  explainError,
+  fixResult,
+  isFixing,
+  fixError,
+  isDownloading,
+  downloadError,
+  onRequestFix,
+  onDownloadFixedProject,
+}) {
   if (!issue) {
     return (
       <div className="issue-detail issue-detail--empty">
@@ -91,6 +104,72 @@ export default function IssueDetail({ issue, onBack, isMobile, isExplaining, exp
         <section className="ai-section ai-section--recommendation">
           <h3>Recommendation</h3>
           <p>{issue.ai_recommendation}</p>
+        </section>
+      )}
+
+      {!isFileLevel && (
+        <section className="ai-section fix-section">
+          <h3>AI fix</h3>
+
+          {!fixResult && (
+            <button className="secondary-button" onClick={onRequestFix} disabled={isFixing}>
+              {isFixing ? "Generating & validating fix…" : "Fix this issue with AI"}
+            </button>
+          )}
+
+          {fixError && (
+            <p className="ai-error">
+              <ErrorIcon /> {fixError}
+            </p>
+          )}
+
+          {fixResult && (
+            <div className="fix-result">
+              <p className={fixResult.success ? "fix-result__status--success" : "fix-result__status--fail"}>
+                {fixResult.success ? "✓ " : "✕ "}
+                {fixResult.final_message}
+              </p>
+
+              {fixResult.attempts.map((attempt) => (
+                <details key={attempt.attempt_number} className="fix-attempt">
+                  <summary>
+                    Attempt {attempt.attempt_number} — {attempt.strategy} on{" "}
+                    <code>{attempt.target_file}</code> —{" "}
+                    {attempt.validation.passed ? "passed" : "failed"}
+                  </summary>
+                  <p>{attempt.patch.description}</p>
+                  {attempt.validation.notes.map((n, i) => (
+                    <p key={i} className="fix-attempt__note">
+                      {n}
+                    </p>
+                  ))}
+                </details>
+              ))}
+
+              {fixResult.success && (
+                <>
+                  <button
+                    className="secondary-button"
+                    onClick={onDownloadFixedProject}
+                    disabled={isDownloading}
+                  >
+                    {isDownloading ? "Packaging zip…" : "Download fixed project (.zip)"}
+                  </button>
+                  {downloadError && (
+                    <p className="ai-error">
+                      <ErrorIcon /> {downloadError}
+                    </p>
+                  )}
+                </>
+              )}
+
+              {!fixResult.success && (
+                <button className="secondary-button" onClick={onRequestFix} disabled={isFixing}>
+                  {isFixing ? "Retrying…" : "Try again"}
+                </button>
+              )}
+            </div>
+          )}
         </section>
       )}
     </div>

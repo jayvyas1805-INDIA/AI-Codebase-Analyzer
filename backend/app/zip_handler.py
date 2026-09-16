@@ -1,5 +1,7 @@
 """
-Handles turning an uploaded .zip into a safely-extracted folder on disk.
+Handles turning an uploaded .zip into a safely-extracted folder on disk,
+and (zip_directory, below) the reverse — packing a folder back into a
+.zip so a fixed project can be downloaded.
 """
 import os
 import uuid
@@ -72,3 +74,31 @@ def safe_extract_zip(zip_path: str, extract_to: str) -> str:
             return candidate
 
     return source_dir
+
+
+def zip_directory(source_dir: str, zip_path: str) -> str:
+    """
+    Packs everything under `source_dir` into a new .zip at `zip_path`
+    (overwriting it if it already exists), skipping IGNORED_DIRS so a
+    downloaded "fixed project" doesn't drag node_modules/.git/etc along
+    with it. Returns `zip_path` for convenient chaining.
+
+    This is the counterpart to safe_extract_zip() above: used by
+    fix_apply.py to turn a patched copy of the project back into a file
+    the user can actually download after an AI fix is applied.
+    """
+    from .config import IGNORED_DIRS  # local import avoids a circular top-level import
+
+    os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, dirs, files in os.walk(source_dir):
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
+            for fname in files:
+                abs_path = os.path.join(root, fname)
+                arcname = os.path.relpath(abs_path, source_dir)
+                zf.write(abs_path, arcname)
+
+    return zip_path
