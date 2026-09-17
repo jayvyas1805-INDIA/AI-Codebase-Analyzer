@@ -37,12 +37,12 @@ from .chat_commands import handle_chat_message
 from .fix_planner import plan_fix
 from .patch_generator import generate_patch
 from .sandbox_validator import validate_patch_in_sandbox
-from .fix_loop import attempt_validated_fix
-from .fix_apply import build_fixed_project_zip
+from .fix_loop import attempt_validated_fix, attempt_validated_fix_all
+from .fix_apply import build_fixed_project_zip, build_bulk_fixed_project_zip
 from .job_cache import save_job, get_job
 from .rate_limit import rate_limit_scan, rate_limit_llm
 from .config import CORS_ALLOWED_ORIGINS, MAX_UPLOAD_SIZE_MB
-from .models import FullAnalysisResult, Issue, ChatRequest, ChatResponse, ChatMessage, FixPlan, Patch, ValidationResult, FixResult
+from .models import FullAnalysisResult, Issue, ChatRequest, ChatResponse, ChatMessage, FixPlan, Patch, ValidationResult, FixResult, BulkFixResult
 
 app = FastAPI(title="React Codebase Analyzer")
 
@@ -397,4 +397,88 @@ def download_fixed_project(job_id: str, issue_id: str, _rl: None = Depends(rate_
         zip_path,
         media_type="application/zip",
         filename=f"fixed_project_{issue_id}.zip",
+    )
+
+
+@app.post("/api/fix-all/{job_id}", response_model=BulkFixResult)
+def fix_all_endpoint(job_id: str, _rl: None = Depends(rate_limit_llm)):
+    """
+    Runs the full plan -> patch -> sandbox-validate loop for EVERY issue
+    in the job in one call, instead of requiring one manual "Fix" click
+    per issue — the point when a project surfaces hundreds of findings.
+
+    Nothing is applied to the real project here either (same "explicit
+    approval before real changes" rule as /api/fix) — this only plans,
+    patches, and sandbox-validates every issue and reports which ones got
+    a validated fix. Call /api/fix-all/{job_id}/download afterwards (or
+    directly — it runs this loop itself if it hasn't run yet) to get a
+    single .zip with every successful fix actually applied.
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found. Jobs only live in memory — re-upload and re-scan if the server restarted.",
+        )
+
+    result = attempt_validated_fix_all(job, job_id)
+    job.last_bulk_fix_result = result
+    return result
+
+
+@app.post("/api/fix-all/{job_id}/download")
+def download_all_fixed_project(job_id: str, _rl: None = Depends(rate_limit_llm)):
+    """
+    Packages the project as a downloadable .zip with EVERY issue that got
+    a validated fix applied at once, in a single pass over the original
+    source (see fix_apply.build_bulk_fixed_project_zip for how changes
+    from different issues' patches are safely combined file-by-file).
+
+    If /api/fix-all hasn't been called yet for this job, this runs the
+    full bulk fix loop itself first, so it always works standalone.
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found. Jobs only live in memory — re-upload and re-scan if the server restarted.",
+        )
+
+    bulk_result = job.last_bulk_fix_result
+    if bulk_result is None:
+        bulk_result = attempt_validated_fix_all(job, job_id)
+        job.last_bulk_fix_result = bulk_result
+
+    successful_patches = [
+        job.last_patch[r.issue_id]
+        for r in bulk_result.results
+        if r.success and r.issue_id in job.last_patch
+    ]
+    if not successful_patches:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"No issues were successfully auto-fixed, so there's nothing to download. "
+                f"({bulk_result.fixed_count} fixed, {bulk_result.failed_count} failed, "
+                f"{bulk_result.skipped_count} not auto-fixable, out of {bulk_result.total_issues} total.)"
+            ),
+        )
+
+    try:
+        zip_path, conflicts = build_bulk_fixed_project_zip(job, successful_patches, job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    headers = {"X-Fixed-Count": str(len(successful_patches))}
+    if conflicts:
+        # Surfaced as a header rather than failing the download outright —
+        # everything else in the zip still applied cleanly; only the
+        # specific overlapping lines listed here were skipped.
+        headers["X-Fix-Conflicts"] = str(len(conflicts))
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=f"fixed_project_all_{job_id}.zip",
+        headers=headers,
     )

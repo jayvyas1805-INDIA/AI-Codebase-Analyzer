@@ -286,6 +286,30 @@ class FixResult(BaseModel):
     final_message: str
 
 
+# ---- Bulk fix (new) ----
+# Runs the same plan -> patch -> sandbox-validate loop as FixResult above,
+# but across every issue in a job in one call, so a project with hundreds
+# of findings doesn't need one manual click per issue. See fix_loop.py's
+# attempt_validated_fix_all() and main.py's /api/fix-all/{job_id}.
+
+class BulkFixIssueResult(BaseModel):
+    issue_id: str
+    class_name: str
+    plannable: bool   # False = this issue type is never auto-fixable (see fix_planner.py); not attempted
+    success: bool
+    message: str
+
+
+class BulkFixResult(BaseModel):
+    job_id: str
+    total_issues: int
+    plannable_issues: int
+    fixed_count: int
+    failed_count: int
+    skipped_count: int   # not plannable — e.g. isolated_duplicate-adjacent cases fix_planner.py refuses to touch
+    results: List[BulkFixIssueResult] = []
+
+
 class FullAnalysisResult(BaseModel):
     job_id: str
     total_css_files_parsed: int

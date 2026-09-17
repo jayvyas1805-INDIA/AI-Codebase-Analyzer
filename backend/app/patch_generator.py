@@ -144,7 +144,10 @@ def _generate_rename(issue: Issue, plan: FixPlan, job) -> Tuple[Dict[str, PatchF
                 f"'.{issue.class_name}' on this line — skipped, needs manual review."
             )
             continue
-        new_line = css_pattern.sub(f".{new_name}", original_line)
+        new_line = css_pattern.sub(
+            lambda match: f".{new_name}",
+            original_line
+        )
         css_changes.append(
             PatchFileChange(
                 start_line=d.line_number,
@@ -174,7 +177,10 @@ def _generate_rename(issue: Issue, plan: FixPlan, job) -> Tuple[Dict[str, PatchF
                 f"'{issue.class_name}' on this line — skipped, needs manual review."
             )
             continue
-        new_line = usage_pattern.sub(new_name, original_line)
+        new_line = usage_pattern.sub(
+            lambda match: new_name,
+            original_line
+        )
         change = PatchFileChange(
             start_line=u.line_number,
             end_line=u.line_number,

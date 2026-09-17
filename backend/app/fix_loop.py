@@ -20,7 +20,7 @@ MAX_ATTEMPTS = 3, matching the spec's own "2-3 attempts" ceiling exactly.
 """
 from typing import List
 
-from .models import FixAttempt, FixPlan, FixResult, Issue
+from .models import BulkFixIssueResult, BulkFixResult, FixAttempt, FixPlan, FixResult, Issue
 from .patch_generator import generate_patch
 from .sandbox_validator import validate_patch_in_sandbox
 from .fix_planner import plan_fix
@@ -88,4 +88,80 @@ def attempt_validated_fix(issue: Issue, job) -> FixResult:
             f"AI could not generate a validated fix after {len(attempts)} attempt(s). "
             f"See each attempt's validation evidence for why it was rejected."
         ),
+    )
+
+
+def attempt_validated_fix_all(job, job_id: str) -> BulkFixResult:
+    """
+    Runs attempt_validated_fix() above for EVERY issue in the job, one
+    after another, instead of requiring a manual "Fix" click per issue —
+    the whole point when a project surfaces hundreds of findings at once.
+
+    Each issue is still planned, patched, and sandbox-validated exactly
+    like the single-issue path (nothing here loosens that safety net —
+    see sandbox_validator.py and fix_planner.py's docstrings for why that
+    matters). This function only removes the need to trigger that loop
+    one issue at a time; it does not skip any of its checks.
+
+    Caches job.last_plan / last_patch / last_validation / last_fix_result
+    per issue exactly like the single-issue endpoint and chat_commands.py's
+    "Fix it" handler do, so a following /api/fix-all/{job_id}/download call
+    (or even a single-issue /api/fix/{job_id}/{issue_id} call afterwards)
+    can reuse this work instead of redoing it.
+
+    Note this is inherently sequential — each issue may involve its own
+    LLM call (ai_rename_suggester.py) and its own full re-analysis pass
+    (sandbox_validator.py) — so for a project with hundreds of issues this
+    can take a while. It still completes deterministically; there's no
+    retry-forever risk since each issue is itself capped at MAX_ATTEMPTS.
+    """
+    results: List[BulkFixIssueResult] = []
+    fixed = failed = skipped = 0
+
+    for issue in job.issues:
+        plan = plan_fix(issue, job)
+        job.last_plan[issue.id] = plan
+
+        if not plan.plannable:
+            skipped += 1
+            results.append(
+                BulkFixIssueResult(
+                    issue_id=issue.id,
+                    class_name=issue.class_name,
+                    plannable=False,
+                    success=False,
+                    message=plan.reason_if_not_plannable or "This issue type cannot be auto-fixed.",
+                )
+            )
+            continue
+
+        fix_result = attempt_validated_fix(issue, job)
+        job.last_fix_result[issue.id] = fix_result
+        if fix_result.attempts:
+            job.last_patch[issue.id] = fix_result.attempts[-1].patch
+            job.last_validation[issue.id] = fix_result.attempts[-1].validation
+
+        if fix_result.success:
+            fixed += 1
+        else:
+            failed += 1
+
+        results.append(
+            BulkFixIssueResult(
+                issue_id=issue.id,
+                class_name=issue.class_name,
+                plannable=True,
+                success=fix_result.success,
+                message=fix_result.final_message,
+            )
+        )
+
+    return BulkFixResult(
+        job_id=job_id,
+        total_issues=len(job.issues),
+        plannable_issues=fixed + failed,
+        fixed_count=fixed,
+        failed_count=failed,
+        skipped_count=skipped,
+        results=results,
     )

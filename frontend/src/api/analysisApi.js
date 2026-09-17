@@ -178,3 +178,73 @@ export async function downloadFixedProject(jobId, issueId) {
   a.remove();
   window.URL.revokeObjectURL(url);
 }
+
+/**
+ * Runs the plan -> patch -> sandbox-validate loop for EVERY issue in the
+ * job in one call (POST /api/fix-all/{job_id}) — for when there are too
+ * many issues to fix one at a time by hand. Returns a BulkFixResult with
+ * per-issue outcomes and fixed/failed/skipped counts. Can take a while on
+ * a project with a lot of issues, since each one may involve its own LLM
+ * call and its own full re-analysis pass.
+ */
+export async function requestFixAll(jobId) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/fix-all/${jobId}`, {
+      method: "POST",
+    });
+  } catch (networkError) {
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
+  }
+
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail || detail;
+    } catch {
+      // response wasn't JSON — keep statusText
+    }
+    throw new Error(`Fix all failed: ${detail}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * Downloads a single .zip of the project with EVERY successfully
+ * auto-fixed issue applied at once (POST /api/fix-all/{job_id}/download).
+ * Runs the bulk fix loop itself first if requestFixAll() hasn't been
+ * called yet for this job, so this always works standalone.
+ */
+export async function downloadAllFixedProject(jobId) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/fix-all/${jobId}/download`, {
+      method: "POST",
+    });
+  } catch (networkError) {
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
+  }
+
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail || detail;
+    } catch {
+      // response wasn't JSON — keep statusText
+    }
+    throw new Error(`Could not download the fixed project: ${detail}`);
+  }
+
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `fixed_project_all_${jobId}.zip`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}

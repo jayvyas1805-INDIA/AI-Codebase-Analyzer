@@ -48,6 +48,11 @@ class JobData:
         self.last_patch: Dict[str, object] = {}
         self.last_validation: Dict[str, object] = {}
         self.last_fix_result: Dict[str, object] = {}
+        # Phase "bulk fix" — caches the result of the last /api/fix-all
+        # call for this job, so a follow-up /api/fix-all/{job_id}/download
+        # doesn't have to redo the whole plan-patch-validate loop for
+        # every issue again. None until /api/fix-all has been called.
+        self.last_bulk_fix_result = None
 
 
 _JOBS: Dict[str, JobData] = {}
