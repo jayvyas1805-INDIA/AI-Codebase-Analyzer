@@ -18,7 +18,10 @@ fix_planner.py and patch_generator.py.
 
 MAX_ATTEMPTS = 3, matching the spec's own "2-3 attempts" ceiling exactly.
 """
-from typing import List
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Optional
 
 from .models import BulkFixIssueResult, BulkFixResult, FixAttempt, FixPlan, FixResult, Issue
 from .patch_generator import generate_patch
@@ -26,6 +29,20 @@ from .sandbox_validator import validate_patch_in_sandbox
 from .fix_planner import plan_fix
 
 MAX_ATTEMPTS = 3
+
+# Sandbox validation used to be the expensive step in a bulk run — a full
+# copytree of the project plus a full re-parse/re-analysis pass PER
+# ATTEMPT. sandbox_validator.py's incremental path (see its module
+# docstring) cut that down to just the file(s) a patch actually touches,
+# and skips the Node subprocess entirely when a patch touches no JSX —
+# which is the common case for a 0-blast-radius CSS rename. With that
+# per-attempt cost down, a single fix is now mostly waiting on an LLM
+# response and quick local file I/O rather than a full project
+# re-analysis, so more of them can genuinely run at once without
+# thrashing the machine. Scales with CPU count (each worker can still
+# spawn a short-lived Node process when a patch does touch JSX), capped
+# at 12 so a huge/weak box doesn't get pushed into swapping.
+DEFAULT_BULK_WORKERS = min(12, max(6, (os.cpu_count() or 4) * 2))
 
 
 def attempt_validated_fix(issue: Issue, job) -> FixResult:
@@ -91,70 +108,113 @@ def attempt_validated_fix(issue: Issue, job) -> FixResult:
     )
 
 
-def attempt_validated_fix_all(job, job_id: str) -> BulkFixResult:
+def _process_one_issue_for_bulk(issue: Issue, job) -> BulkFixIssueResult:
     """
-    Runs attempt_validated_fix() above for EVERY issue in the job, one
-    after another, instead of requiring a manual "Fix" click per issue —
-    the whole point when a project surfaces hundreds of findings at once.
+    One issue's plan -> patch -> sandbox-validate loop, exactly like the
+    sequential bulk-fix path did — this is what a worker thread runs.
+    Safe to call from multiple threads concurrently: each issue only ever
+    writes to its OWN issue.id key in job.last_plan/last_patch/
+    last_validation/last_fix_result (different threads never touch the
+    same key), and job.root_path is only ever READ — every sandbox
+    validation works on its own throwaway tempdir copy, never on shared
+    state, so there's nothing for two threads to collide on.
+    """
+    plan = plan_fix(issue, job)
+    job.last_plan[issue.id] = plan
+
+    if not plan.plannable:
+        return BulkFixIssueResult(
+            issue_id=issue.id,
+            class_name=issue.class_name,
+            plannable=False,
+            success=False,
+            message=plan.reason_if_not_plannable or "This issue type cannot be auto-fixed.",
+        )
+
+    fix_result = attempt_validated_fix(issue, job)
+    job.last_fix_result[issue.id] = fix_result
+    if fix_result.attempts:
+        job.last_patch[issue.id] = fix_result.attempts[-1].patch
+        job.last_validation[issue.id] = fix_result.attempts[-1].validation
+
+    return BulkFixIssueResult(
+        issue_id=issue.id,
+        class_name=issue.class_name,
+        plannable=True,
+        success=fix_result.success,
+        message=fix_result.final_message,
+    )
+
+
+def attempt_validated_fix_all(
+    job,
+    job_id: str,
+    max_workers: int = DEFAULT_BULK_WORKERS,
+    progress: Optional[dict] = None,
+) -> BulkFixResult:
+    """
+    Runs attempt_validated_fix() above for EVERY issue in the job, up to
+    `max_workers` at once, instead of requiring a manual "Fix" click per
+    issue (or waiting on them strictly one-after-another) — the whole
+    point when a project surfaces hundreds of findings at once.
 
     Each issue is still planned, patched, and sandbox-validated exactly
     like the single-issue path (nothing here loosens that safety net —
     see sandbox_validator.py and fix_planner.py's docstrings for why that
-    matters). This function only removes the need to trigger that loop
-    one issue at a time; it does not skip any of its checks.
+    matters, and _process_one_issue_for_bulk's docstring for why running
+    this concurrently is safe). Parallelism only changes HOW MANY issues
+    are in flight at once, never what a single issue's fix must pass.
 
     Caches job.last_plan / last_patch / last_validation / last_fix_result
-    per issue exactly like the single-issue endpoint and chat_commands.py's
-    "Fix it" handler do, so a following /api/fix-all/{job_id}/download call
-    (or even a single-issue /api/fix/{job_id}/{issue_id} call afterwards)
-    can reuse this work instead of redoing it.
+    per issue exactly like the sequential version did, so a following
+    /api/fix-all/{job_id}/download call (or even a single-issue
+    /api/fix/{job_id}/{issue_id} call afterwards) can reuse this work
+    instead of redoing it.
 
-    Note this is inherently sequential — each issue may involve its own
-    LLM call (ai_rename_suggester.py) and its own full re-analysis pass
-    (sandbox_validator.py) — so for a project with hundreds of issues this
-    can take a while. It still completes deterministically; there's no
-    retry-forever risk since each issue is itself capped at MAX_ATTEMPTS.
+    If `progress` is given (a plain dict), it's updated after every issue
+    finishes with the running totals: "processed", "fixed", "failed",
+    "skipped". main.py's /api/fix-all/{job_id}/start hands this same dict
+    to GET /api/fix-all/{job_id}/progress, so the frontend can poll real
+    state — "312 of 528 done" — instead of staring at a single button for
+    however long the whole run takes.
     """
     results: List[BulkFixIssueResult] = []
     fixed = failed = skipped = 0
+    lock = threading.Lock()
 
-    for issue in job.issues:
-        plan = plan_fix(issue, job)
-        job.last_plan[issue.id] = plan
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        future_to_issue = {pool.submit(_process_one_issue_for_bulk, issue, job): issue for issue in job.issues}
 
-        if not plan.plannable:
-            skipped += 1
-            results.append(
-                BulkFixIssueResult(
+        for future in as_completed(future_to_issue):
+            issue = future_to_issue[future]
+            try:
+                result = future.result()
+            except Exception as e:
+                # A crash fixing ONE issue (e.g. a transient sandbox I/O
+                # error) must never take the whole bulk run down with it —
+                # record it as a failure for that issue and keep going.
+                result = BulkFixIssueResult(
                     issue_id=issue.id,
                     class_name=issue.class_name,
-                    plannable=False,
+                    plannable=True,
                     success=False,
-                    message=plan.reason_if_not_plannable or "This issue type cannot be auto-fixed.",
+                    message=f"Unexpected error while fixing this issue: {e}",
                 )
-            )
-            continue
 
-        fix_result = attempt_validated_fix(issue, job)
-        job.last_fix_result[issue.id] = fix_result
-        if fix_result.attempts:
-            job.last_patch[issue.id] = fix_result.attempts[-1].patch
-            job.last_validation[issue.id] = fix_result.attempts[-1].validation
+            with lock:
+                results.append(result)
+                if not result.plannable:
+                    skipped += 1
+                elif result.success:
+                    fixed += 1
+                else:
+                    failed += 1
 
-        if fix_result.success:
-            fixed += 1
-        else:
-            failed += 1
-
-        results.append(
-            BulkFixIssueResult(
-                issue_id=issue.id,
-                class_name=issue.class_name,
-                plannable=True,
-                success=fix_result.success,
-                message=fix_result.final_message,
-            )
-        )
+                if progress is not None:
+                    progress["processed"] = len(results)
+                    progress["fixed"] = fixed
+                    progress["failed"] = failed
+                    progress["skipped"] = skipped
 
     return BulkFixResult(
         job_id=job_id,

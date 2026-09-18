@@ -63,8 +63,15 @@ def _to_snake_case(s: str) -> str:
 
 
 def _file_stem_slug(css_file_path: str) -> str:
-    """'admin/src/components/OrderSummaryV2.css' -> 'order_summary_v2'"""
-    base = css_file_path.rsplit("/", 1)[-1]
+    """'admin/src/components/OrderSummaryV2.css' -> 'order_summary_v2'
+
+    Splits on both '/' and '\\' for the same reason _component_stem() in
+    fix_planner.py does — see that docstring. _to_snake_case() below would
+    eventually turn a stray backslash into an underscore too, but doing it
+    here keeps this function's contract explicit rather than relying on
+    that as an incidental side effect.
+    """
+    base = re.split(r"[\\/]", css_file_path)[-1]
     stem = base.rsplit(".", 1)[0]
     return _to_snake_case(stem)
 

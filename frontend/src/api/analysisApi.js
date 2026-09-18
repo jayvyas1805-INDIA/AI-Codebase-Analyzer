@@ -212,6 +212,66 @@ export async function requestFixAll(jobId) {
 }
 
 /**
+ * Kicks off the same bulk fix loop in the backend but returns immediately
+ * (POST /api/fix-all/{job_id}/start) instead of blocking until every
+ * issue is done. Pair with pollFixAllProgress() below to show live
+ * progress instead of one long silent wait. Safe to call again while a
+ * run is already in progress — the backend just returns that run's
+ * current progress instead of starting a second one.
+ */
+export async function startFixAll(jobId) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/fix-all/${jobId}/start`, {
+      method: "POST",
+    });
+  } catch (networkError) {
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
+  }
+
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail || detail;
+    } catch {
+      // response wasn't JSON — keep statusText
+    }
+    throw new Error(`Could not start fixing issues: ${detail}`);
+  }
+
+  return response.json();
+}
+
+/**
+ * One poll of GET /api/fix-all/{job_id}/progress — returns
+ * { status, total, processed, fixed, failed, skipped, error, result }.
+ * "result" is only populated once status is "done". Call this on an
+ * interval (see ResultsScreen.jsx's handleFixAll) rather than once.
+ */
+export async function getFixAllProgress(jobId) {
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/fix-all/${jobId}/progress`);
+  } catch (networkError) {
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
+  }
+
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail || detail;
+    } catch {
+      // response wasn't JSON — keep statusText
+    }
+    throw new Error(`Could not check fix progress: ${detail}`);
+  }
+
+  return response.json();
+}
+
+/**
  * Downloads a single .zip of the project with EVERY successfully
  * auto-fixed issue applied at once (POST /api/fix-all/{job_id}/download).
  * Runs the bulk fix loop itself first if requestFixAll() hasn't been

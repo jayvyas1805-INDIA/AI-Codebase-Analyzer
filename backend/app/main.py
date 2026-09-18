@@ -17,6 +17,7 @@ Then open http://127.0.0.1:8000/docs for interactive API docs.
 """
 import os
 import shutil
+import threading
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,7 +43,7 @@ from .fix_apply import build_fixed_project_zip, build_bulk_fixed_project_zip
 from .job_cache import save_job, get_job
 from .rate_limit import rate_limit_scan, rate_limit_llm
 from .config import CORS_ALLOWED_ORIGINS, MAX_UPLOAD_SIZE_MB
-from .models import FullAnalysisResult, Issue, ChatRequest, ChatResponse, ChatMessage, FixPlan, Patch, ValidationResult, FixResult, BulkFixResult
+from .models import FullAnalysisResult, Issue, ChatRequest, ChatResponse, ChatMessage, FixPlan, Patch, ValidationResult, FixResult, BulkFixResult, BulkFixProgress
 
 app = FastAPI(title="React Codebase Analyzer")
 
@@ -404,8 +405,13 @@ def download_fixed_project(job_id: str, issue_id: str, _rl: None = Depends(rate_
 def fix_all_endpoint(job_id: str, _rl: None = Depends(rate_limit_llm)):
     """
     Runs the full plan -> patch -> sandbox-validate loop for EVERY issue
-    in the job in one call, instead of requiring one manual "Fix" click
-    per issue — the point when a project surfaces hundreds of findings.
+    in the job in one call (in parallel — see fix_loop.py's
+    attempt_validated_fix_all), instead of requiring one manual "Fix"
+    click per issue — the point when a project surfaces hundreds of
+    findings. This call BLOCKS until every issue is done; for a project
+    with a lot of issues, prefer /api/fix-all/{job_id}/start +
+    /api/fix-all/{job_id}/progress instead, so the frontend can show
+    live progress rather than one long silent wait.
 
     Nothing is applied to the real project here either (same "explicit
     approval before real changes" rule as /api/fix) — this only plans,
@@ -424,6 +430,78 @@ def fix_all_endpoint(job_id: str, _rl: None = Depends(rate_limit_llm)):
     result = attempt_validated_fix_all(job, job_id)
     job.last_bulk_fix_result = result
     return result
+
+
+@app.post("/api/fix-all/{job_id}/start", response_model=BulkFixProgress)
+def fix_all_start_endpoint(job_id: str, _rl: None = Depends(rate_limit_llm)):
+    """
+    Kicks off the same bulk fix loop as POST /api/fix-all/{job_id}, but in
+    a background thread, and returns immediately with "status": "running"
+    instead of blocking until every issue is done. Poll
+    GET /api/fix-all/{job_id}/progress afterwards for live counts.
+
+    If a bulk run is already in progress for this job, returns its
+    current progress instead of starting a second one — only one bulk fix
+    runs per job at a time, so two "Fix all" clicks in a row (or a page
+    refresh + re-click) can't spawn overlapping runs.
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found. Jobs only live in memory — re-upload and re-scan if the server restarted.",
+        )
+
+    if job.bulk_fix_progress["status"] == "running":
+        return BulkFixProgress(**job.bulk_fix_progress)
+
+    job.bulk_fix_progress.update(
+        {
+            "status": "running",
+            "total": len(job.issues),
+            "processed": 0,
+            "fixed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "error": None,
+        }
+    )
+
+    def _run_in_background():
+        try:
+            result = attempt_validated_fix_all(job, job_id, progress=job.bulk_fix_progress)
+            job.last_bulk_fix_result = result
+            job.bulk_fix_progress["status"] = "done"
+        except Exception as e:
+            # A crash here must still leave the job in a state the
+            # frontend can show and recover from, not a stuck spinner.
+            job.bulk_fix_progress["status"] = "error"
+            job.bulk_fix_progress["error"] = str(e)
+
+    threading.Thread(target=_run_in_background, daemon=True).start()
+
+    return BulkFixProgress(**job.bulk_fix_progress)
+
+
+@app.get("/api/fix-all/{job_id}/progress", response_model=BulkFixProgress)
+def fix_all_progress_endpoint(job_id: str):
+    """
+    Polled by the frontend (every ~1s while a bulk fix is running) to
+    show live progress instead of a single opaque wait. Once "status" is
+    "done", the full BulkFixResult is included as "result" so the
+    frontend doesn't need a separate call to get the final breakdown.
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found. Jobs only live in memory — re-upload and re-scan if the server restarted.",
+        )
+
+    payload = dict(job.bulk_fix_progress)
+    if payload.get("status") == "done" and job.last_bulk_fix_result is not None:
+        payload["result"] = job.last_bulk_fix_result
+    return BulkFixProgress(**payload)
 
 
 @app.post("/api/fix-all/{job_id}/download")

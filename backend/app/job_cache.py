@@ -53,6 +53,21 @@ class JobData:
         # doesn't have to redo the whole plan-patch-validate loop for
         # every issue again. None until /api/fix-all has been called.
         self.last_bulk_fix_result = None
+        # Live progress for an in-flight /api/fix-all/{job_id}/start run,
+        # polled via GET /api/fix-all/{job_id}/progress. "status" is one of
+        # idle | running | done | error. Mutated from a background thread
+        # (see main.py) — safe because every field is a plain int/str
+        # reassignment, atomic under the GIL, and only one bulk run is
+        # ever started per job at a time (guarded by "status" itself).
+        self.bulk_fix_progress = {
+            "status": "idle",
+            "total": 0,
+            "processed": 0,
+            "fixed": 0,
+            "failed": 0,
+            "skipped": 0,
+            "error": None,
+        }
 
 
 _JOBS: Dict[str, JobData] = {}

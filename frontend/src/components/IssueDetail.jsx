@@ -1,4 +1,5 @@
 import { SEVERITY_META, ISSUE_TYPE_META, FILE_LEVEL_ISSUE_TYPES } from "../utils/issueMeta.js";
+import { renderRichText } from "../utils/richText.jsx";
 import DiffTable from "./DiffTable.jsx";
 import SkeletonLines from "./SkeletonLines.jsx";
 
@@ -95,15 +96,17 @@ export default function IssueDetail({
           <p className="ai-error">
             <ErrorIcon /> {explainError}
           </p>
+        ) : issue.ai_explanation ? (
+          <div className="rich-text">{renderRichText(issue.ai_explanation)}</div>
         ) : (
-          <p>{issue.ai_explanation || "Not available."}</p>
+          <p>Not available.</p>
         )}
       </section>
 
       {!isExplaining && !explainError && issue.ai_recommendation && (
         <section className="ai-section ai-section--recommendation">
           <h3>Recommendation</h3>
-          <p>{issue.ai_recommendation}</p>
+          <div className="rich-text">{renderRichText(issue.ai_recommendation)}</div>
         </section>
       )}
 

@@ -310,6 +310,17 @@ class BulkFixResult(BaseModel):
     results: List[BulkFixIssueResult] = []
 
 
+class BulkFixProgress(BaseModel):
+    status: str   # idle | running | done | error
+    total: int = 0
+    processed: int = 0
+    fixed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    error: Optional[str] = None
+    result: Optional[BulkFixResult] = None
+
+
 class FullAnalysisResult(BaseModel):
     job_id: str
     total_css_files_parsed: int

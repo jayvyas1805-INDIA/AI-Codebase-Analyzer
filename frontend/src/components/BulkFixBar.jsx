@@ -3,12 +3,19 @@ export default function BulkFixBar({
   bulkFixResult,
   isBulkFixing,
   bulkFixError,
+  bulkFixProgress,
   isBulkDownloading,
   bulkDownloadError,
   onFixAll,
   onDownloadAllFixed,
 }) {
   if (totalIssues === 0) return null;
+
+  const showLiveProgress = isBulkFixing && bulkFixProgress;
+  const pct =
+    showLiveProgress && bulkFixProgress.total > 0
+      ? Math.round((bulkFixProgress.processed / bulkFixProgress.total) * 100)
+      : 0;
 
   return (
     <div className="bulk-fix-bar">
@@ -17,20 +24,39 @@ export default function BulkFixBar({
           <h3>Fix all {totalIssues} issue{totalIssues !== 1 ? "s" : ""} at once</h3>
           <p>
             Runs the AI plan &rarr; patch &rarr; sandbox-validate loop across every issue,
-            so you don&rsquo;t have to fix each one by hand. Nothing touches your real files
-            until you download the result.
+            several at a time, so you don&rsquo;t have to fix each one by hand. Nothing
+            touches your real files until you download the result.
           </p>
         </div>
         <button className="primary-button" onClick={onFixAll} disabled={isBulkFixing}>
-          {isBulkFixing ? "Fixing all issues…" : "Fix all issues with AI"}
+          {isBulkFixing ? "Fixing…" : "Fix all issues with AI"}
         </button>
       </div>
+
+      {showLiveProgress && (
+        <div className="bulk-fix-progress">
+          <div className="bulk-fix-progress__bar-track">
+            <div className="bulk-fix-progress__bar-fill" style={{ width: `${pct}%` }} />
+          </div>
+          <div className="bulk-fix-progress__row">
+            <span className="bulk-fix-progress__count">
+              {bulkFixProgress.processed} of {bulkFixProgress.total} issues checked
+              <span className="bulk-fix-progress__pct">{pct}%</span>
+            </span>
+            <span className="bulk-fix-progress__live-stats">
+              <span className="bulk-stat bulk-stat--success">{bulkFixProgress.fixed} fixed</span>
+              <span className="bulk-stat bulk-stat--fail">{bulkFixProgress.failed} failed</span>
+              <span className="bulk-stat bulk-stat--neutral">{bulkFixProgress.skipped} skipped</span>
+            </span>
+          </div>
+        </div>
+      )}
 
       {bulkFixError && (
         <p className="ai-error bulk-fix-bar__error">{bulkFixError}</p>
       )}
 
-      {bulkFixResult && (
+      {bulkFixResult && !isBulkFixing && (
         <div className="bulk-fix-bar__summary">
           <div className="bulk-fix-bar__stats">
             <span className="bulk-stat bulk-stat--success">{bulkFixResult.fixed_count} fixed</span>

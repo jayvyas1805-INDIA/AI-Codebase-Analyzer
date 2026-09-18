@@ -11,7 +11,8 @@ import {
   sendChatMessage,
   requestFix,
   downloadFixedProject,
-  requestFixAll,
+  startFixAll,
+  getFixAllProgress,
   downloadAllFixedProject,
 } from "../api/analysisApi.js";
 
@@ -106,6 +107,7 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
   const [bulkFixResult, setBulkFixResult] = useState(null);
   const [isBulkFixing, setIsBulkFixing] = useState(false);
   const [bulkFixError, setBulkFixError] = useState(null);
+  const [bulkFixProgress, setBulkFixProgress] = useState(null);
 
   const [isBulkDownloading, setIsBulkDownloading] = useState(false);
   const [bulkDownloadError, setBulkDownloadError] = useState(null);
@@ -140,20 +142,24 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
       setExplainError(null);
 
       try {
-        const explanation = await explainIssue(
+        const updatedIssue = await explainIssue(
           result.job_id,
           issue.id
         );
 
-        console.log("AI EXPLANATION RESPONSE:", explanation);
+        // /api/explain returns the FULL updated Issue object (with
+        // ai_explanation and ai_recommendation now filled in) — not a
+        // separate "explanation" wrapper. IssueDetail.jsx reads
+        // issue.ai_explanation / issue.ai_recommendation directly, so the
+        // returned issue must REPLACE the old one in state, not be stashed
+        // under an unrelated `explanation` key (which IssueDetail never
+        // reads, so it always showed "Not available.").
+        console.log("AI EXPLANATION RESPONSE:", updatedIssue);
 
         setIssues((currentIssues) =>
           currentIssues.map((currentIssue) =>
             currentIssue.id === issue.id
-              ? {
-                ...currentIssue,
-                explanation,
-              }
+              ? updatedIssue
               : currentIssue
           )
         );
@@ -169,6 +175,20 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
     },
     [result.job_id]
   );
+
+  // Auto-fetch the AI explanation as soon as an issue is selected — the
+  // "AI explanation" section in IssueDetail.jsx has no button of its own
+  // (unlike the "AI fix" section below it), so something has to trigger
+  // handleExplainIssue on selection or it never runs. Skips issues that
+  // already have an explanation (e.g. re-selecting one, or a job restored
+  // from a previous session) so switching back and forth doesn't re-hit
+  // the LLM every time.
+  useEffect(() => {
+    if (selectedIssue && selectedIssue.ai_explanation == null) {
+      handleExplainIssue(selectedIssue);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedIssue?.id]);
 
   /* =======================================================
      REQUEST INDIVIDUAL FIX
@@ -312,11 +332,37 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
     setBulkFixError(null);
     setBulkFixResult(null);
     setIsBulkFixing(true);
+    setBulkFixProgress({
+      status: "running",
+      total: issues.length,
+      processed: 0,
+      fixed: 0,
+      failed: 0,
+      skipped: 0,
+    });
 
     try {
-      const bulkResult = await requestFixAll(result.job_id);
+      await startFixAll(result.job_id);
 
-      setBulkFixResult(bulkResult);
+      // Poll every 800ms until the backend reports done/error. The
+      // backend runs this in a background thread (see fix_loop.py /
+      // main.py's /api/fix-all/{job_id}/start), so this loop is just
+      // reading live progress, not doing any of the actual fixing work.
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        const progress = await getFixAllProgress(result.job_id);
+        setBulkFixProgress(progress);
+
+        if (progress.status === "done") {
+          setBulkFixResult(progress.result);
+          break;
+        }
+        if (progress.status === "error") {
+          setBulkFixError(progress.error || "Failed to fix all issues.");
+          break;
+        }
+      }
     } catch (err) {
       console.error("Bulk fix error:", err);
 
@@ -326,7 +372,7 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
     } finally {
       setIsBulkFixing(false);
     }
-  }, [result.job_id]);
+  }, [result.job_id, issues.length]);
 
 
   /* =======================================================
@@ -499,6 +545,7 @@ export default function ResultsScreen({ result, onAnalyzeAnother }) {
         bulkFixResult={bulkFixResult}
         isBulkFixing={isBulkFixing}
         bulkFixError={bulkFixError}
+        bulkFixProgress={bulkFixProgress}
 
         isBulkDownloading={isBulkDownloading}
         bulkDownloadError={bulkDownloadError}

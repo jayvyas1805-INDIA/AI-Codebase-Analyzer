@@ -47,6 +47,8 @@ every JSX file in the same reaching application, but downgrade risk to
 """
 from typing import List, Optional, Tuple
 
+import re
+
 from .models import CSSClassDefinitionRef, FixOption, FixPlan, Issue
 from .ai_context_builder import _importers_of, _file_to_application
 
@@ -54,8 +56,16 @@ NOT_PLANNABLE_CATEGORIES = {"isolated_duplicate", "unused_css", None}
 
 
 def _component_stem(css_file_path: str) -> str:
-    """'admin/src/components/Dashboard/dashboard.css' -> 'dashboard'"""
-    base = css_file_path.rsplit("/", 1)[-1]
+    """'admin/src/components/Dashboard/dashboard.css' -> 'dashboard'
+
+    Splits on BOTH '/' and '\\' — css_file_path comes straight from
+    whatever the uploaded project's zip used, and on a project built on
+    Windows that's backslashes. Splitting on '/' alone left the entire
+    directory prefix stuck to the front of the class name (e.g.
+    'src\\components\\navbar\\ctafooter_land-footer' instead of just
+    'ctafooter_land-footer').
+    """
+    base = re.split(r"[\\/]", css_file_path)[-1]
     return base.rsplit(".", 1)[0].lower()
 
 
