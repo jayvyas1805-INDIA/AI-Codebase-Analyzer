@@ -70,7 +70,7 @@ OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 # deploying anywhere other than localhost.
 CORS_ALLOWED_ORIGINS = [
     o.strip() for o in os.getenv(
-        "CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+        "CORS_ALLOWED_ORIGINS", "https://ai-codebase-analyzer-sandy.vercel.app,http://localhost:5173,http://127.0.0.1:5173"
     ).split(",") if o.strip()
 ]
 

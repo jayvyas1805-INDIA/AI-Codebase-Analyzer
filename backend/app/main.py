@@ -47,12 +47,10 @@ from .models import FullAnalysisResult, Issue, ChatRequest, ChatResponse, ChatMe
 
 app = FastAPI(title="React Codebase Analyzer")
 
-# Real allowlist, not "*" — see config.py's CORS_ALLOWED_ORIGINS. Defaults
-# to the Vite dev server's usual ports, so local dev is unaffected; set
-# the CORS_ALLOWED_ORIGINS env var before deploying anywhere else.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
