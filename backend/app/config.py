@@ -69,9 +69,15 @@ OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 # but this is a real allowlist now, not "*". Override via env var before
 # deploying anywhere other than localhost.
 CORS_ALLOWED_ORIGINS = [
-    o.strip() for o in os.getenv(
-        "CORS_ALLOWED_ORIGINS", "https://ai-codebase-analyzer-sandy.vercel.app,http://localhost:5173,http://127.0.0.1:5173"
-    ).split(",") if o.strip()
+    o.strip().rstrip("/")
+    for o in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "https://ai-codebase-analyzer-sandy.vercel.app,"
+        "https://ai-codebase-analyzer-4iz2lpnt6-23bt04172-6828s-projects.vercel.app,"
+        "http://localhost:5173,"
+        "http://127.0.0.1:5173"
+    ).split(",")
+    if o.strip()
 ]
 
 # Reject uploads bigger than this before they're even fully written to
