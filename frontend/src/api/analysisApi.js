@@ -1,6 +1,6 @@
 // Central place for talking to the backend.
 // Change this if your backend runs on a different host/port.
-// const API_BASE_URL = "http://127.0.0.1:8000";
+const API_BASE_URL =  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
 /**
  * Uploads a .zip file to the backend and returns the FullAnalysisResult JSON.
@@ -27,7 +27,7 @@ export async function analyzeProjectZip(zipFile, includeLow = false) {
     });
   } catch (networkError) {
     throw new Error(
-      `Could not reach the backend at ${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}. Is it running? ` +
+      `Could not reach the backend at ${API_BASE_URL}. Is it running? ` +
         `(uvicorn app.main:app --reload)`
     );
   }
@@ -54,11 +54,11 @@ export async function analyzeProjectZip(zipFile, includeLow = false) {
 export async function explainIssue(jobId, issueId) {
   let response;
   try {
-    response = await fetch(`${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}/api/explain/${jobId}/${issueId}`, {
+    response = await fetch(`${API_BASE_URL}/api/explain/${jobId}/${issueId}`, {
       method: "POST",
     });
   } catch (networkError) {
-    throw new Error(`Could not reach the backend at ${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}.`);
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
   }
 
   if (!response.ok) {
@@ -84,13 +84,13 @@ export async function explainIssue(jobId, issueId) {
 export async function sendChatMessage(jobId, issueId, message) {
   let response;
   try {
-    response = await fetch(`${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}/api/chat/${jobId}/${issueId}`, {
+    response = await fetch(`${API_BASE_URL}/api/chat/${jobId}/${issueId}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message }),
     });
   } catch (networkError) {
-    throw new Error(`Could not reach the backend at ${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}.`);
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
   }
 
   if (!response.ok) {
@@ -116,11 +116,11 @@ export async function sendChatMessage(jobId, issueId, message) {
 export async function requestFix(jobId, issueId) {
   let response;
   try {
-    response = await fetch(`${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}/api/fix/${jobId}/${issueId}`, {
+    response = await fetch(`${API_BASE_URL}/api/fix/${jobId}/${issueId}`, {
       method: "POST",
     });
   } catch (networkError) {
-    throw new Error(`Could not reach the backend at ${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}.`);
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
   }
 
   if (!response.ok) {
@@ -150,11 +150,11 @@ export async function requestFix(jobId, issueId) {
 export async function downloadFixedProject(jobId, issueId) {
   let response;
   try {
-    response = await fetch(`${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}/api/fix/${jobId}/${issueId}/download`, {
+    response = await fetch(`${API_BASE_URL}/api/fix/${jobId}/${issueId}/download`, {
       method: "POST",
     });
   } catch (networkError) {
-    throw new Error(`Could not reach the backend at ${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}.`);
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
   }
 
   if (!response.ok) {
@@ -190,11 +190,11 @@ export async function downloadFixedProject(jobId, issueId) {
 export async function requestFixAll(jobId) {
   let response;
   try {
-    response = await fetch(`${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}/api/fix-all/${jobId}`, {
+    response = await fetch(`${API_BASE_URL}/api/fix-all/${jobId}`, {
       method: "POST",
     });
   } catch (networkError) {
-    throw new Error(`Could not reach the backend at ${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}.`);
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
   }
 
   if (!response.ok) {
@@ -222,11 +222,11 @@ export async function requestFixAll(jobId) {
 export async function startFixAll(jobId) {
   let response;
   try {
-    response = await fetch(`${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}/api/fix-all/${jobId}/start`, {
+    response = await fetch(`${API_BASE_URL}/api/fix-all/${jobId}/start`, {
       method: "POST",
     });
   } catch (networkError) {
-    throw new Error(`Could not reach the backend at ${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}.`);
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
   }
 
   if (!response.ok) {
@@ -252,9 +252,9 @@ export async function startFixAll(jobId) {
 export async function getFixAllProgress(jobId) {
   let response;
   try {
-    response = await fetch(`${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}/api/fix-all/${jobId}/progress`);
+    response = await fetch(`${API_BASE_URL}/api/fix-all/${jobId}/progress`);
   } catch (networkError) {
-    throw new Error(`Could not reach the backend at ${import.meta.env.VITE_API_BASE_URL|| "http://127.0.0.1:8000"}.`);
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
   }
 
   if (!response.ok) {
@@ -280,11 +280,11 @@ export async function getFixAllProgress(jobId) {
 export async function downloadAllFixedProject(jobId) {
   let response;
   try {
-    response = await fetch(`${import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000"}/api/fix-all/${jobId}/download`, {
+    response = await fetch(`${API_BASE_URL}/api/fix-all/${jobId}/download`, {
       method: "POST",
     });
   } catch (networkError) {
-    throw new Error(`Could not reach the backend at ${import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000"}.`);
+    throw new Error(`Could not reach the backend at ${API_BASE_URL}.`);
   }
 
   if (!response.ok) {
